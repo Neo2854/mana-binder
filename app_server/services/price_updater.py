@@ -60,13 +60,21 @@ async def update_all_prices():
         db.close()
 
 async def price_update_loop():
-    """Run price updates every 24 hours"""
+    """Run price updates immediately, then every 24 hours"""
+    # Run initial update immediately in background
+    try:
+        print(f"[{datetime.now().isoformat()}] Running initial price update in background...")
+        await update_all_prices()
+    except Exception as e:
+        print(f"Error in initial price update: {e}")
+    
+    # Continue with periodic updates
     while True:
         try:
-            print(f"[{datetime.now().isoformat()}] Running scheduled price update...")
-            await update_all_prices()
             # Wait 24 hours before next update
             await asyncio.sleep(24 * 60 * 60)
+            print(f"[{datetime.now().isoformat()}] Running scheduled price update...")
+            await update_all_prices()
         except Exception as e:
             print(f"Error in price update loop: {e}")
             # Wait 1 hour before retrying after an error

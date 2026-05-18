@@ -63,11 +63,13 @@ class DeckCard(Base):
     name = Column(String, nullable=False)
     quantity = Column(Integer, default=1)
     is_commander = Column(Boolean, default=False)
+    is_sideboard = Column(Boolean, default=False)
     
     # Card data snapshot (to avoid re-fetching)
     mana_cost = Column(String)
     type_line = Column(String)
     image_uri = Column(String)
     colors = Column(String)
+    tags = Column(String)  # Single tag for categorization
     
     deck = relationship("Deck", back_populates="cards")

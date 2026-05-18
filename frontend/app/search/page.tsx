@@ -258,7 +258,7 @@ export default function SearchPage() {
             cmc: card.cmc,
             type_line: card.type_line,
             oracle_text: card.oracle_text,
-            colors: card.colors ? JSON.stringify(card.colors) : null,
+            colors: card.colors ? card.colors.join(',') : null,
             image_uri: getCardImage(card, 'normal', 0),
             price: card.prices?.usd || null,
             quantity: newQuantity

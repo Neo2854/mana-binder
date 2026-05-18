@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from .routes import hello, collection, decks
 from .db.database import init_db
-from .services.price_updater import update_all_prices, start_price_updater
+from .services.price_updater import start_price_updater
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -12,10 +12,7 @@ async def lifespan(app: FastAPI):
     print("Initializing database...")
     init_db()
     
-    print("Running initial price update...")
-    await update_all_prices()
-    
-    print("Starting background price updater (runs every 24 hours)...")
+    print("Starting background price updater (will run immediately, then every 24 hours)...")
     start_price_updater()
     
     yield

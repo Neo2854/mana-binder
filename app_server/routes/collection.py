@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 import httpx
 import csv
 import io
 import asyncio
+import json
 from ..db.database import get_db
 from ..db.models import CollectionCard, Folder, Deck
 
@@ -409,146 +411,164 @@ async def import_collection_from_csv(
     db: Session = Depends(get_db)
 ):
     """
-    Import cards from a CSV file into the collection.
+    Import cards from a CSV file into the collection with real-time SSE progress updates.
     Expected CSV format: Name, Set code, Set name, Collector number, Foil, Rarity, 
     Quantity, ManaBox ID, Scryfall ID, Purchase price, ...
     """
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
     
-    try:
-        # Read the CSV file
-        contents = await file.read()
-        csv_text = contents.decode('utf-8')
-        csv_reader = csv.DictReader(io.StringIO(csv_text))
-        
-        imported_count = 0
-        failed_count = 0
-        skipped_count = 0
-        failed_cards = []
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for row_num, row in enumerate(csv_reader, start=2):  # Start at 2 (1 is header)
-                try:
-                    # Extract data from CSV
-                    scryfall_id = row.get('Scryfall ID', '').strip()
-                    name = row.get('Name', '').strip()
-                    quantity = int(row.get('Quantity', '1'))
-                    purchase_price = row.get('Purchase price', '').strip()
-                    set_code = row.get('Set code', '').strip()
-                    
-                    if not scryfall_id:
+    async def event_generator():
+        try:
+            # Read the CSV file
+            contents = await file.read()
+            csv_text = contents.decode('utf-8')
+            csv_reader = csv.DictReader(io.StringIO(csv_text))
+            rows = list(csv_reader)
+            total_rows = len(rows)
+            
+            # Send initial event with total count
+            yield f"data: {json.dumps({'type': 'start', 'total': total_rows})}\n\n"
+            
+            imported_count = 0
+            failed_count = 0
+            skipped_count = 0
+            failed_cards = []
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for row_num, row in enumerate(rows, start=2):  # Start at 2 (1 is header)
+                    try:
+                        # Extract data from CSV
+                        scryfall_id = row.get('Scryfall ID', '').strip()
+                        name = row.get('Name', '').strip()
+                        quantity = int(row.get('Quantity', '1'))
+                        purchase_price = row.get('Purchase price', '').strip()
+                        set_code = row.get('Set code', '').strip()
+                        
+                        if not scryfall_id:
+                            failed_cards.append({
+                                'row': row_num,
+                                'name': name,
+                                'reason': 'Missing Scryfall ID'
+                            })
+                            failed_count += 1
+                            # Send progress update
+                            yield f"data: {json.dumps({'type': 'progress', 'current': row_num - 1, 'total': total_rows, 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'status': 'failed', 'card': name})}\n\n"
+                            continue
+                        
+                        if not name:
+                            failed_cards.append({
+                                'row': row_num,
+                                'scryfall_id': scryfall_id,
+                                'reason': 'Missing card name'
+                            })
+                            failed_count += 1
+                            # Send progress update
+                            yield f"data: {json.dumps({'type': 'progress', 'current': row_num - 1, 'total': total_rows, 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'status': 'failed', 'card': scryfall_id})}\n\n"
+                            continue
+                        
+                        # Check if card already exists in collection
+                        existing_card = db.query(CollectionCard).filter(
+                            CollectionCard.scryfall_id == scryfall_id
+                        ).first()
+                        
+                        if existing_card:
+                            # Update quantity instead of creating new entry
+                            existing_card.quantity += quantity
+                            if purchase_price and not existing_card.purchase_price:
+                                existing_card.purchase_price = purchase_price
+                            skipped_count += 1
+                            # Send progress update
+                            yield f"data: {json.dumps({'type': 'progress', 'current': row_num - 1, 'total': total_rows, 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'status': 'updated', 'card': name})}\n\n"
+                            continue
+                        
+                        # Fetch card details from Scryfall
+                        response = await client.get(
+                            f"https://api.scryfall.com/cards/{scryfall_id}"
+                        )
+                        
+                        if response.status_code != 200:
+                            failed_cards.append({
+                                'row': row_num,
+                                'name': name,
+                                'scryfall_id': scryfall_id,
+                                'reason': f'Scryfall API error: {response.status_code}'
+                            })
+                            failed_count += 1
+                            # Send progress update
+                            yield f"data: {json.dumps({'type': 'progress', 'current': row_num - 1, 'total': total_rows, 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'status': 'failed', 'card': name})}\n\n"
+                            continue
+                        
+                        card_data = response.json()
+                        
+                        # Extract card information
+                        image_uri = None
+                        if card_data.get('image_uris'):
+                            image_uri = card_data['image_uris'].get('normal')
+                        elif card_data.get('card_faces') and card_data['card_faces'][0].get('image_uris'):
+                            image_uri = card_data['card_faces'][0]['image_uris'].get('normal')
+                        
+                        colors = card_data.get('colors', [])
+                        colors_str = ','.join(colors) if colors else None
+                        
+                        current_price = card_data.get('prices', {}).get('usd')
+                        
+                        # If no purchase price in CSV, use current price
+                        if not purchase_price and current_price:
+                            purchase_price = current_price
+                        
+                        # Create new card entry
+                        new_card = CollectionCard(
+                            folder_id=folder_id,
+                            scryfall_id=scryfall_id,
+                            name=card_data.get('name', name),
+                            set_code=card_data.get('set', set_code),
+                            set_name=card_data.get('set_name'),
+                            collector_number=card_data.get('collector_number'),
+                            rarity=card_data.get('rarity'),
+                            mana_cost=card_data.get('mana_cost'),
+                            cmc=card_data.get('cmc'),
+                            type_line=card_data.get('type_line'),
+                            oracle_text=card_data.get('oracle_text'),
+                            colors=colors_str,
+                            image_uri=image_uri,
+                            price=current_price,
+                            purchase_price=purchase_price,
+                            quantity=quantity
+                        )
+                        
+                        db.add(new_card)
+                        imported_count += 1
+                        
+                        # Send progress update
+                        yield f"data: {json.dumps({'type': 'progress', 'current': row_num - 1, 'total': total_rows, 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'status': 'imported', 'card': name})}\n\n"
+                        
+                        # Rate limiting: Scryfall allows ~10 requests per second
+                        if imported_count % 10 == 0:
+                            await asyncio.sleep(1.1)
+                        else:
+                            await asyncio.sleep(0.11)
+                        
+                    except Exception as e:
                         failed_cards.append({
                             'row': row_num,
-                            'name': name,
-                            'reason': 'Missing Scryfall ID'
+                            'name': row.get('Name', 'Unknown'),
+                            'reason': str(e)
                         })
                         failed_count += 1
+                        db.rollback()
+                        # Send progress update
+                        yield f"data: {json.dumps({'type': 'progress', 'current': row_num - 1, 'total': total_rows, 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'status': 'error', 'card': row.get('Name', 'Unknown')})}\n\n"
                         continue
-                    
-                    if not name:
-                        failed_cards.append({
-                            'row': row_num,
-                            'scryfall_id': scryfall_id,
-                            'reason': 'Missing card name'
-                        })
-                        failed_count += 1
-                        continue
-                    
-                    # Check if card already exists in collection
-                    existing_card = db.query(CollectionCard).filter(
-                        CollectionCard.scryfall_id == scryfall_id
-                    ).first()
-                    
-                    if existing_card:
-                        # Update quantity instead of creating new entry
-                        existing_card.quantity += quantity
-                        if purchase_price and not existing_card.purchase_price:
-                            existing_card.purchase_price = purchase_price
-                        skipped_count += 1
-                        db.commit()
-                        continue
-                    
-                    # Fetch card details from Scryfall
-                    response = await client.get(
-                        f"https://api.scryfall.com/cards/{scryfall_id}"
-                    )
-                    
-                    if response.status_code != 200:
-                        failed_cards.append({
-                            'row': row_num,
-                            'name': name,
-                            'scryfall_id': scryfall_id,
-                            'reason': f'Scryfall API error: {response.status_code}'
-                        })
-                        failed_count += 1
-                        continue
-                    
-                    card_data = response.json()
-                    
-                    # Extract card information
-                    image_uri = None
-                    if card_data.get('image_uris'):
-                        image_uri = card_data['image_uris'].get('normal')
-                    elif card_data.get('card_faces') and card_data['card_faces'][0].get('image_uris'):
-                        image_uri = card_data['card_faces'][0]['image_uris'].get('normal')
-                    
-                    colors = card_data.get('colors', [])
-                    colors_str = ','.join(colors) if colors else None
-                    
-                    current_price = card_data.get('prices', {}).get('usd')
-                    
-                    # If no purchase price in CSV, use current price
-                    if not purchase_price and current_price:
-                        purchase_price = current_price
-                    
-                    # Create new card entry
-                    new_card = CollectionCard(
-                        folder_id=folder_id,
-                        scryfall_id=scryfall_id,
-                        name=card_data.get('name', name),
-                        set_code=card_data.get('set', set_code),
-                        set_name=card_data.get('set_name'),
-                        collector_number=card_data.get('collector_number'),
-                        rarity=card_data.get('rarity'),
-                        mana_cost=card_data.get('mana_cost'),
-                        cmc=card_data.get('cmc'),
-                        type_line=card_data.get('type_line'),
-                        oracle_text=card_data.get('oracle_text'),
-                        colors=colors_str,
-                        image_uri=image_uri,
-                        price=current_price,
-                        purchase_price=purchase_price,
-                        quantity=quantity
-                    )
-                    
-                    db.add(new_card)
-                    db.commit()
-                    imported_count += 1
-                    
-                    # Rate limiting: Scryfall allows ~10 requests per second
-                    if imported_count % 10 == 0:
-                        await asyncio.sleep(1.1)
-                    else:
-                        await asyncio.sleep(0.11)
-                    
-                except Exception as e:
-                    failed_cards.append({
-                        'row': row_num,
-                        'name': row.get('Name', 'Unknown'),
-                        'reason': str(e)
-                    })
-                    failed_count += 1
-                    db.rollback()
-                    continue
-        
-        return {
-            "status": "success",
-            "imported": imported_count,
-            "skipped": skipped_count,
-            "failed": failed_count,
-            "failed_cards": failed_cards[:10]  # Return first 10 failures
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing CSV: {str(e)}")
+            
+            # Batch commit all changes at once
+            db.commit()
+            
+            # Send completion event
+            yield f"data: {json.dumps({'type': 'complete', 'status': 'success', 'imported': imported_count, 'skipped': skipped_count, 'failed': failed_count, 'failed_cards': failed_cards[:10]})}\n\n"
+            
+        except Exception as e:
+            db.rollback()
+            yield f"data: {json.dumps({'type': 'error', 'status': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

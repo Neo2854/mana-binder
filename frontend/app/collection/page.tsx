@@ -325,9 +325,11 @@ export default function CollectionPage() {
     if (file && file.name.endsWith('.csv')) {
       setSelectedFile(file)
       setImportResult(null)
+      setImportProgress({ current: 0, total: 0 })
     } else if (file) {
       alert('Please select a CSV file')
       event.target.value = ''
+      setSelectedFile(null)
     }
   }
 
@@ -339,13 +341,6 @@ export default function CollectionPage() {
     setImportProgress({ current: 0, total: 0 })
 
     try {
-      // First, count total rows in CSV
-      const text = await selectedFile.text()
-      const lines = text.split('\n').filter(line => line.trim())
-      const totalCards = Math.max(0, lines.length - 1) // Subtract header row
-      
-      setImportProgress({ current: 0, total: totalCards })
-
       const formData = new FormData()
       formData.append('file', selectedFile)
 
@@ -353,35 +348,65 @@ export default function CollectionPage() {
         ? `${API_URL}/api/collection/import-csv?folder_id=${selectedFolder}`
         : `${API_URL}/api/collection/import-csv`
 
-      // Simulate progress updates (since we can't get real-time progress from the backend easily)
-      const progressInterval = setInterval(() => {
-        setImportProgress(prev => {
-          if (prev.current < prev.total) {
-            return { ...prev, current: Math.min(prev.current + 1, prev.total) }
-          }
-          return prev
-        })
-      }, 100) // Update every 100ms
-
+      // Use fetch to POST the file, then read the SSE stream from the response
       const response = await fetch(url, {
         method: 'POST',
         body: formData
       })
 
-      clearInterval(progressInterval)
+      if (!response.ok) {
+        throw new Error('Failed to start import')
+      }
 
-      const result = await response.json()
+      // Read the SSE stream
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
       
-      if (response.ok) {
-        setImportProgress({ current: totalCards, total: totalCards })
-        setImportResult(result)
-        fetchCollection()
-        fetchFolders()
-      } else {
-        setImportResult({
-          status: 'error',
-          message: result.detail || 'Failed to import CSV'
-        })
+      if (!reader) {
+        throw new Error('No response body')
+      }
+
+      let buffer = ''
+      
+      while (true) {
+        const { done, value } = await reader.read()
+        
+        if (done) break
+        
+        buffer += decoder.decode(value, { stream: true })
+        
+        // Process complete SSE messages
+        const lines = buffer.split('\n\n')
+        buffer = lines.pop() || '' // Keep incomplete message in buffer
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = JSON.parse(line.substring(6))
+            
+            if (data.type === 'start') {
+              setImportProgress({ current: 0, total: data.total })
+            } else if (data.type === 'progress') {
+              setImportProgress({ current: data.current, total: data.total })
+            } else if (data.type === 'complete') {
+              setImportResult(data)
+              fetchCollection()
+              fetchFolders()
+              
+              // Auto-close modal after 2 seconds on success
+              setTimeout(() => {
+                setShowImportModal(false)
+                setImportResult(null)
+                setSelectedFile(null)
+                setImportProgress({ current: 0, total: 0 })
+              }, 2000)
+            } else if (data.type === 'error') {
+              setImportResult({
+                status: 'error',
+                message: data.message || 'Failed to import CSV'
+              })
+            }
+          }
+        }
       }
     } catch (error) {
       console.error('Error importing CSV:', error)
@@ -399,6 +424,12 @@ export default function CollectionPage() {
     setImportResult(null)
     setSelectedFile(null)
     setImportProgress({ current: 0, total: 0 })
+    setImportingCSV(false)
+    // Reset file input
+    const fileInput = document.getElementById('csv-upload') as HTMLInputElement
+    if (fileInput) {
+      fileInput.value = ''
+    }
   }
 
   const toggleColorFilter = (color: string) => {
@@ -437,7 +468,7 @@ export default function CollectionPage() {
 
     // Color filter - multi-color cards only show if ALL their colors are selected
     if (colorFilters.size > 0) {
-      const cardColors = card.colors ? JSON.parse(card.colors) : []
+      const cardColors = card.colors ? card.colors.split(',') : []
       
       // If card has no colors (colorless), only show if no colors are selected
       // or if user hasn't selected any colors
@@ -1135,7 +1166,7 @@ export default function CollectionPage() {
                       )}
                     </div>
 
-                    {/* Progress Bar */}
+                    {/* Progress with Real-time Updates */}
                     {importingCSV && (
                       <div style={{ marginBottom: '1.5rem' }}>
                         <div style={{ 
@@ -1144,7 +1175,7 @@ export default function CollectionPage() {
                           alignItems: 'center',
                           marginBottom: '0.5rem'
                         }}>
-                          <span style={{ fontSize: '0.875rem', fontWeight: '600' }}>Importing cards...</span>
+                          <span style={{ fontSize: '0.875rem', fontWeight: '600' }}>Importing cards from CSV...</span>
                           <span style={{ fontSize: '0.875rem', color: '#60a5fa' }}>
                             {importProgress.current} / {importProgress.total}
                           </span>
@@ -1183,21 +1214,7 @@ export default function CollectionPage() {
                       </div>
                     )}
 
-                    {/* Import Button */}
-                    {selectedFile && !importingCSV && (
-                      <button 
-                        onClick={startImport}
-                        className="btn btn-primary"
-                        style={{ width: '100%', marginBottom: '1rem' }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: '0.5rem' }}>
-                          <path d="M9 16V10H5L12 3L19 10H15V16H9ZM5 20V18H19V20H5Z" fill="currentColor"/>
-                        </svg>
-                        Start Import
-                      </button>
-                    )}
-
-                    <div style={{ fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.6)' }}>
+                    <div style={{ fontSize: '0.875rem', color: 'rgba(255, 255, 255, 0.6)', marginBottom: '1.5rem' }}>
                       <p style={{ fontWeight: '600', marginBottom: '0.5rem' }}>Expected CSV Format:</p>
                       <ul style={{ paddingLeft: '1.5rem', lineHeight: '1.8' }}>
                         <li>Name - Card name</li>
@@ -1207,6 +1224,28 @@ export default function CollectionPage() {
                         <li>Set code, Set name, Rarity, etc.</li>
                       </ul>
                     </div>
+
+                    {/* Import Button - Bottom Right */}
+                    {selectedFile && !importingCSV && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
+                        <button 
+                          onClick={startImport}
+                          className="btn btn-primary"
+                          style={{ 
+                            paddingLeft: '1.5rem', 
+                            paddingRight: '1.5rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
+                          }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M9 16V10H5L12 3L19 10H15V16H9ZM5 20V18H19V20H5Z" fill="currentColor"/>
+                          </svg>
+                          Import
+                        </button>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div>
