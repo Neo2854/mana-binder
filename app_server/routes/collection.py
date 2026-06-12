@@ -130,7 +130,7 @@ async def update_folder(
 @router.get("/", response_model=List[CardResponse])
 async def get_collection(
     skip: int = 0,
-    limit: int = 1000,
+    limit: int = 10000,
     search: Optional[str] = None,
     folder_id: Optional[int] = None,
     db: Session = Depends(get_db)

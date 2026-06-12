@@ -1,6 +1,7 @@
 'use client'
 
 import { DeckCard } from '../types'
+import ManaCost from './ManaCost'
 
 interface CardListItemProps {
   card: DeckCard
@@ -12,10 +13,13 @@ interface CardListItemProps {
   cardMenuOpen: number | null
   setCardMenuOpen: (cardId: number | null) => void
   onRemove: (cardId: number) => void
+  onRemoveCopy?: (cardId: number) => void
   allTags: string[]
   deckFormat: string | undefined
   onAddToTag: (cardId: number, tag: string) => void
   onPromoteCommander: (cardId: number) => void
+  onAddToSideboard?: (cardId: number) => void
+  onAddAllToSideboard?: (cardId: number) => void
 }
 
 export default function CardListItem({
@@ -28,24 +32,37 @@ export default function CardListItem({
   cardMenuOpen,
   setCardMenuOpen,
   onRemove,
+  onRemoveCopy,
   allTags,
   deckFormat,
   onAddToTag,
-  onPromoteCommander
+  onPromoteCommander,
+  onAddToSideboard,
+  onAddAllToSideboard
 }: CardListItemProps) {
   const isCommanderFormat = deckFormat?.toLowerCase() === 'commander' || deckFormat?.toLowerCase() === 'brawl'
+  const isStandardFormat = deckFormat?.toLowerCase() === 'standard'
+  
+  const handleClick = (e: React.MouseEvent) => {
+    // For Standard format, clicking removes one copy
+    if (isStandardFormat && onRemoveCopy && !multiSelectMode) {
+      e.stopPropagation()
+      onRemoveCopy(card.id)
+    }
+  }
   
   return (
     <div
       onMouseEnter={() => setHoveredCard(card)}
       onMouseLeave={() => setHoveredCard(null)}
+      onClick={handleClick}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: '0.5rem',
         padding: '0.15rem 0.5rem',
         borderRadius: '6px',
-        cursor: 'pointer',
+        cursor: isStandardFormat && onRemoveCopy ? 'pointer' : 'default',
         transition: 'background-color 0.2s',
         backgroundColor: hoveredCard?.id === card.id ? 'rgba(0, 0, 0, 0.05)' : 'transparent',
         minHeight: '28px',
@@ -92,6 +109,10 @@ export default function CardListItem({
       }}>
         {card.name}
       </span>
+      
+      {/* Mana Cost */}
+      <ManaCost manaCost={card.mana_cost} />
+      
       {card.is_commander && (
         <span style={{
           fontSize: '0.75rem',
@@ -232,6 +253,60 @@ export default function CardListItem({
                 Add to '{tag}'
               </button>
             ))}
+            
+            {/* Sideboard options */}
+            {onAddToSideboard && card.tags !== 'Sideboard' && (
+              <>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onAddToSideboard(card.id)
+                    setCardMenuOpen(null)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '0.625rem 1rem',
+                    border: 'none',
+                    backgroundColor: 'transparent',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    fontSize: '0.875rem',
+                    color: 'rgba(0, 0, 0, 0.9)',
+                    borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
+                    fontWeight: '500'
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(139, 92, 246, 0.1)'}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                >
+                  Add to Sideboard
+                </button>
+                {card.quantity > 1 && onAddAllToSideboard && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onAddAllToSideboard(card.id)
+                      setCardMenuOpen(null)
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '0.625rem 1rem',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      fontSize: '0.875rem',
+                      color: 'rgba(0, 0, 0, 0.9)',
+                      borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
+                      fontWeight: '500'
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(139, 92, 246, 0.1)'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                  >
+                    Add all to Sideboard ({card.quantity}x)
+                  </button>
+                )}
+              </>
+            )}
             
             {/* Remove from Deck option */}
             <button

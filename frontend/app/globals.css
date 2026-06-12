@@ -1,3 +1,21 @@
+@import url('https://cdn.jsdelivr.net/npm/mana-font@latest/css/mana.min.css');
+
+/* Mana symbol styling - centered with shadow like MTGGoldfish */
+.ms {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  line-height: 1 !important;
+}
+
+.ms::before {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 :root {
   --sidebar-width: 240px;
   --sidebar-bg: #1a1b23;
@@ -2956,5 +2974,25 @@ select:focus {
   
   .deck-card-image {
     height: 180px;
+  }
+}
+
+/* Hide scrollbar for horizontal collection scroll */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Spin animation for loading indicators */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }

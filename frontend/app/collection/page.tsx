@@ -44,6 +44,7 @@ interface CollectionCard {
   rarity?: string
   mana_cost?: string
   type_line?: string
+  oracle_text?: string
   image_uri?: string
   quantity: number
   colors?: string
@@ -82,6 +83,10 @@ export default function CollectionPage() {
   const [importResult, setImportResult] = useState<any | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 })
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1)
+  const itemsPerPage = 40
 
   useEffect(() => {
     fetchData()
@@ -91,6 +96,11 @@ export default function CollectionPage() {
   useEffect(() => {
     setCurrentFaceIndex(0)
   }, [selectedCardDetails])
+  
+  // Reset to first page when filters change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [collectionFilter, typeFilter, colorFilters, selectedFolder])
 
   const fetchData = async () => {
     setLoading(true)
@@ -488,6 +498,17 @@ export default function CollectionPage() {
   })
 
   const totalCards = collection.reduce((sum, card) => sum + card.quantity, 0)
+  
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredCollection.length / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const paginatedCollection = filteredCollection.slice(startIndex, endIndex)
+  
+  const goToPage = (page: number) => {
+    setCurrentPage(Math.max(1, Math.min(page, totalPages)))
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
 
   const folderColors = [
     '#f97316', '#3b82f6', '#ef4444', '#10b981', '#f59e0b', 
@@ -826,7 +847,14 @@ export default function CollectionPage() {
               )}
             </div>
           ) : (
-            <div className="card-grid card-grid-collection">
+            <>
+              {/* Pagination Info */}
+              <div style={{ marginBottom: '1rem', color: 'rgba(255, 255, 255, 0.7)', fontSize: '0.875rem' }}>
+                Showing {startIndex + 1}-{Math.min(endIndex, filteredCollection.length)} of {filteredCollection.length} unique cards
+                {totalPages > 1 && ` • Page ${currentPage} of ${totalPages}`}
+              </div>
+              
+              <div className="card-grid card-grid-collection">
               {showBulkMoveMenu && (
                 <div className="bulk-move-menu">
                   <div className="bulk-move-menu-content">
@@ -853,7 +881,7 @@ export default function CollectionPage() {
                   </div>
                 </div>
               )}
-              {filteredCollection.map(card => (
+              {paginatedCollection.map(card => (
                 <div key={card.id} className={`collection-card ${selectedCards.has(card.id) ? 'selected' : ''}`}>
                   {selectionMode && (
                     <div className="card-checkbox-wrapper">
@@ -917,6 +945,102 @@ export default function CollectionPage() {
                 </div>
               ))}
             </div>
+            
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: '0.5rem',
+                marginTop: '2rem',
+                paddingBottom: '2rem'
+              }}>
+                <button
+                  onClick={() => goToPage(1)}
+                  disabled={currentPage === 1}
+                  className="btn btn-sm"
+                  style={{
+                    opacity: currentPage === 1 ? 0.5 : 1,
+                    cursor: currentPage === 1 ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M18.41 16.59L13.82 12L18.41 7.41L17 6L11 12L17 18L18.41 16.59ZM6 6H8V18H6V6Z" fill="currentColor"/>
+                  </svg>
+                </button>
+                <button
+                  onClick={() => goToPage(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="btn btn-sm"
+                  style={{
+                    opacity: currentPage === 1 ? 0.5 : 1,
+                    cursor: currentPage === 1 ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15.41 7.41L14 6L8 12L14 18L15.41 16.59L10.83 12L15.41 7.41Z" fill="currentColor"/>
+                  </svg>
+                </button>
+                
+                <div style={{ display: 'flex', gap: '0.25rem' }}>
+                  {Array.from({ length: Math.min(7, totalPages) }, (_, i) => {
+                    let pageNum: number
+                    if (totalPages <= 7) {
+                      pageNum = i + 1
+                    } else if (currentPage <= 4) {
+                      pageNum = i + 1
+                    } else if (currentPage >= totalPages - 3) {
+                      pageNum = totalPages - 6 + i
+                    } else {
+                      pageNum = currentPage - 3 + i
+                    }
+                    
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => goToPage(pageNum)}
+                        className="btn btn-sm"
+                        style={{
+                          backgroundColor: currentPage === pageNum ? '#f97316' : 'rgba(255, 255, 255, 0.1)',
+                          minWidth: '2.5rem'
+                        }}
+                      >
+                        {pageNum}
+                      </button>
+                    )
+                  })}
+                </div>
+                
+                <button
+                  onClick={() => goToPage(currentPage + 1)}
+                  disabled={currentPage === totalPages}
+                  className="btn btn-sm"
+                  style={{
+                    opacity: currentPage === totalPages ? 0.5 : 1,
+                    cursor: currentPage === totalPages ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 6L8.59 7.41L13.17 12L8.59 16.59L10 18L16 12L10 6Z" fill="currentColor"/>
+                  </svg>
+                </button>
+                <button
+                  onClick={() => goToPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="btn btn-sm"
+                  style={{
+                    opacity: currentPage === totalPages ? 0.5 : 1,
+                    cursor: currentPage === totalPages ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M5.59 7.41L10.18 12L5.59 16.59L7 18L13 12L7 6L5.59 7.41ZM16 6H18V18H16V6Z" fill="currentColor"/>
+                  </svg>
+                </button>
+              </div>
+            )}
+          </>
           )}
         </div>
       </div>

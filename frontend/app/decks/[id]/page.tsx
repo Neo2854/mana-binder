@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { DeckCard, CollectionCard, Deck, ScryfallCard } from './types'
 import { categorizeCardsByTags, categorizeCardsByType, getCategoryCount, getExistingTags, getAllTags, getDefaultTagsForFormat } from './utils'
@@ -13,6 +13,11 @@ import Toast from './components/Toast'
 import QuickAddSearch from './components/QuickAddSearch'
 import DeckStatistics from './components/DeckStatistics'
 import ManaCurve from './components/ManaCurve'
+import DeckTabs from './components/DeckTabs'
+import StandardCollectionView from './components/StandardCollectionView'
+import MultiSelectControls from './components/MultiSelectControls'
+import StandardDeckDisplay from './components/StandardDeckDisplay'
+import CommanderDeckDisplay from './components/CommanderDeckDisplay'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -54,6 +59,19 @@ export default function DeckDetailPage() {
   
   // Toast notification state
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null)
+  
+  // Standard format: Track unsaved changes
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  
+  // Basic lands state (for Standard format - local until saved)
+  const [basicLands, setBasicLands] = useState<Record<string, number>>({
+    'Plains': 0,
+    'Island': 0,
+    'Swamp': 0,
+    'Mountain': 0,
+    'Forest': 0
+  })
 
   useEffect(() => {
     if (deckId) {
@@ -62,6 +80,14 @@ export default function DeckDetailPage() {
       fetchAllDecks()
     }
   }, [deckId])
+
+  // Reset to 'deck' tab if viewing Standard format and on 'add-cards' tab
+  useEffect(() => {
+    const isStandard = deck?.format?.toLowerCase() === 'standard'
+    if (deck && isStandard && activeTab === 'add-cards') {
+      setActiveTab('deck')
+    }
+  }, [deck, activeTab])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -81,13 +107,25 @@ export default function DeckDetailPage() {
         }
         return
       }
+      
+      // Ctrl/Cmd + S: Save deck changes (Standard format only)
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault()
+        const isStandard = deck?.format?.toLowerCase() === 'standard'
+        if (isStandard && hasUnsavedChanges && activeTab === 'deck') {
+          saveDeckChanges()
+        }
+        return
+      }
 
       // Number keys for tab switching
+      const isStandard = deck?.format?.toLowerCase() === 'standard'
       if (e.key === '1') {
         setActiveTab('deck')
       } else if (e.key === '2') {
         setActiveTab('mana-curve')
-      } else if (e.key === '3') {
+      } else if (e.key === '3' && !isStandard) {
+        // Only allow tab 3 for non-Standard formats
         setActiveTab('add-cards')
       }
 
@@ -124,7 +162,31 @@ export default function DeckDetailPage() {
 
     document.addEventListener('keydown', handleKeyPress)
     return () => document.removeEventListener('keydown', handleKeyPress)
-  }, [activeTab, multiSelectMode, selectedCards, selectedDeckCards, deckId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, multiSelectMode, selectedCards, selectedDeckCards, deckId, deck, hasUnsavedChanges])
+  
+  // Initialize basic lands from deck cards (Standard format only)
+  useEffect(() => {
+    if (deck && deck.format?.toLowerCase() === 'standard') {
+      const landsFromDeck: Record<string, number> = {
+        'Plains': 0,
+        'Island': 0,
+        'Swamp': 0,
+        'Mountain': 0,
+        'Forest': 0
+      }
+      
+      deck.cards.forEach(card => {
+        const isBasicLand = card.type_line?.toLowerCase().includes('basic land')
+        const landName = card.name
+        if (isBasicLand && landsFromDeck.hasOwnProperty(landName) && !card.is_sideboard && card.tags !== 'Sideboard') {
+          landsFromDeck[landName] = card.quantity
+        }
+      })
+      
+      setBasicLands(landsFromDeck)
+    }
+  }, [deck])
 
   const fetchDeck = async () => {
     setLoading(true)
@@ -173,10 +235,12 @@ export default function DeckDetailPage() {
     const decksUsing: string[] = []
     
     allDecks.forEach(d => {
-      const cardInDeck = d.cards.find(c => c.scryfall_id === scryfallId)
+      // Use local deck state if we're checking the current deck (for unsaved changes)
+      const deckToCheck = d.id === deck?.id ? deck : d
+      const cardInDeck = deckToCheck.cards.find(c => c.scryfall_id === scryfallId)
       if (cardInDeck) {
         totalUsed += cardInDeck.quantity
-        decksUsing.push(d.name)
+        decksUsing.push(deckToCheck.name)
       }
     })
     
@@ -317,6 +381,164 @@ export default function DeckDetailPage() {
     setSearchQuery('')
   }
 
+  // Quick add card to deck (for Standard format)
+  const quickAddCardToDeck = async (card: CollectionCard) => {
+    const availableQty = getAvailableQuantity(card)
+    
+    if (availableQty === 0) {
+      setToast({
+        message: 'No available copies to add',
+        type: 'error'
+      })
+      return
+    }
+    
+    // Check if card already exists in deck
+    const existingCard = deck?.cards.find(c => c.scryfall_id === card.scryfall_id && !c.is_sideboard)
+    
+    if (existingCard) {
+      // Increment quantity optimistically (UI only)
+      setDeck(prevDeck => {
+        if (!prevDeck) return prevDeck
+        return {
+          ...prevDeck,
+          cards: prevDeck.cards.map(c => 
+            c.id === existingCard.id 
+              ? { ...c, quantity: c.quantity + 1 }
+              : c
+          )
+        }
+      })
+      setHasUnsavedChanges(true)
+    } else {
+      // Add new card to deck optimistically (UI only)
+      const newCard: DeckCard = {
+        id: Date.now(), // Temporary ID for UI
+        scryfall_id: card.scryfall_id,
+        name: card.name,
+        quantity: 1,
+        is_commander: false,
+        is_sideboard: false,
+        mana_cost: card.mana_cost,
+        type_line: card.type_line,
+        image_uri: card.image_uri,
+        colors: card.colors,
+        tags: undefined
+      }
+      
+      setDeck(prevDeck => {
+        if (!prevDeck) return prevDeck
+        return {
+          ...prevDeck,
+          cards: [...prevDeck.cards, newCard]
+        }
+      })
+      setHasUnsavedChanges(true)
+    }
+  }
+  
+  // Save all deck changes to database
+  const saveDeckChanges = async () => {
+    if (!deck || !hasUnsavedChanges) return
+    
+    setIsSaving(true)
+    try {
+      // Get all cards (including sideboard) that need to be synced
+      const cardsToSync = deck.cards
+      
+      // Delete all existing cards and re-add (simplest approach)
+      // First, fetch current deck to get real card IDs
+      const currentDeckResponse = await fetch(`${API_URL}/api/decks/${deckId}`)
+      const currentDeck = await currentDeckResponse.json()
+      
+      // Delete all existing cards (both main deck and sideboard)
+      for (const card of currentDeck.cards) {
+        await fetch(`${API_URL}/api/decks/${deckId}/cards/${card.id}`, {
+          method: 'DELETE'
+        })
+      }
+      
+      // Add all cards from current UI state (including sideboard)
+      for (const card of cardsToSync) {
+        await fetch(`${API_URL}/api/decks/${deckId}/cards`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scryfall_id: card.scryfall_id,
+            name: card.name,
+            quantity: card.quantity,
+            is_commander: card.is_commander,
+            is_sideboard: card.tags === 'Sideboard' || card.is_sideboard,
+            mana_cost: card.mana_cost,
+            type_line: card.type_line,
+            image_uri: card.image_uri,
+            colors: card.colors,
+            tags: card.tags
+          })
+        })
+      }
+      
+      // Add basic lands (Standard format only)
+      if (deck.format?.toLowerCase() === 'standard') {
+        for (const [landName, count] of Object.entries(basicLands)) {
+          if (count > 0) {
+            // Fetch land data from Scryfall
+            const scryfallResponse = await fetch(`https://api.scryfall.com/cards/named?exact=${encodeURIComponent(landName)}`)
+            const scryfallData = await scryfallResponse.json()
+            
+            await fetch(`${API_URL}/api/decks/${deckId}/cards`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                scryfall_id: scryfallData.id,
+                name: landName,
+                quantity: count,
+                is_commander: false,
+                is_sideboard: false,
+                mana_cost: scryfallData.mana_cost || '',
+                type_line: scryfallData.type_line,
+                image_uri: scryfallData.image_uris?.normal || '',
+                colors: scryfallData.colors?.join(',') || '',
+                tags: null
+              })
+            })
+          }
+        }
+      }
+      
+      // Refresh deck from server
+      await fetchDeck()
+      await fetchAllDecks()
+      
+      setHasUnsavedChanges(false)
+      setToast({
+        message: 'Deck saved successfully!',
+        type: 'success'
+      })
+    } catch (error) {
+      console.error('Error saving deck:', error)
+      setToast({
+        message: 'Failed to save deck',
+        type: 'error'
+      })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+  
+  // Warn before leaving with unsaved changes
+  useEffect(() => {
+    if (!hasUnsavedChanges) return
+    
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [hasUnsavedChanges])
+
   // Deck tab multi-select functions
   const toggleMultiSelectMode = () => {
     setMultiSelectMode(!multiSelectMode)
@@ -366,75 +588,80 @@ export default function DeckDetailPage() {
     }
   }
 
-  const addTagsToSelectedCards = async () => {
+  const addTagsToSelectedCards = () => {
     // If it's for a single card, use the single card handler
     if (singleCardForTag !== null) {
-      await addTagToSingleCard()
+      addTagToSingleCard()
       return
     }
     
     if (selectedDeckCards.size === 0 || !selectedTagForAssign.trim()) return
     
-    try {
-      const cardIds = Array.from(selectedDeckCards)
-      for (const cardId of cardIds) {
-        await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}/tags`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tags: selectedTagForAssign.trim() })
-        })
+    const tagToAssign = selectedTagForAssign.trim()
+    const cardIds = Array.from(selectedDeckCards)
+    
+    // Update local state only - keep tags and is_sideboard in sync
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.map(c => 
+          cardIds.includes(c.id) 
+            ? { 
+                ...c, 
+                tags: tagToAssign,
+                is_sideboard: tagToAssign === 'Sideboard'
+              }
+            : c
+        )
       }
-      
-      // Refresh deck and clear selection
-      await fetchDeck()
-      setSelectedDeckCards(new Set())
-      setShowAssignTagModal(false)
-      setSelectedTagForAssign('')
-      
-      // Remove from pending tags if it was there
-      if (pendingTags.has(selectedTagForAssign.trim())) {
-        setPendingTags(prev => {
-          const newSet = new Set(prev)
-          newSet.delete(selectedTagForAssign.trim())
-          return newSet
-        })
-      }
-      
-      setToast({
-        message: `Tag "${selectedTagForAssign.trim()}" added to ${cardIds.length} card${cardIds.length > 1 ? 's' : ''}`,
-        type: 'success'
-      })
-    } catch (error) {
-      console.error('Error adding tags to cards:', error)
-      setToast({
-        message: 'Failed to add tag',
-        type: 'error'
+    })
+    
+    // Clear selection and close modal
+    setSelectedDeckCards(new Set())
+    setShowAssignTagModal(false)
+    setSelectedTagForAssign('')
+    
+    // Remove from pending tags if it was there
+    if (pendingTags.has(tagToAssign)) {
+      setPendingTags(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(tagToAssign)
+        return newSet
       })
     }
+    
+    setHasUnsavedChanges(true)
+    setToast({
+      message: `Tag "${tagToAssign}" added to ${cardIds.length} card${cardIds.length > 1 ? 's' : ''}`,
+      type: 'success'
+    })
   }
 
   // Single card operations
-  const addCardToTag = async (cardId: number, tag: string) => {
-    try {
-      await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}/tags`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tags: tag })
-      })
-      
-      await fetchDeck()
-      
-      setToast({
-        message: `Card moved to ${tag}`,
-        type: 'success'
-      })
-    } catch (error) {
-      console.error('Error adding tag to card:', error)
-      setToast({
-        message: 'Failed to add tag',
-        type: 'error'
-      })
-    }
+  const addCardToTag = (cardId: number, tag: string) => {
+    // Update local state only - keep tags and is_sideboard in sync
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.map(c => 
+          c.id === cardId 
+            ? { 
+                ...c, 
+                tags: tag,
+                is_sideboard: tag === 'Sideboard'
+              }
+            : c
+        )
+      }
+    })
+    
+    setHasUnsavedChanges(true)
+    setToast({
+      message: `Card moved to ${tag}`,
+      type: 'success'
+    })
   }
 
   const promoteCardAsCommander = async (cardId: number) => {
@@ -460,26 +687,198 @@ export default function DeckDetailPage() {
     }
   }
 
+  // Sideboard operations - only move 1 copy
+  const addOneToSideboard = (cardId: number) => {
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      
+      const card = prevDeck.cards.find(c => c.id === cardId)
+      if (!card) return prevDeck
+      
+      // Check if there's already a sideboard entry for this card (same scryfall_id)
+      const existingSideboardCard = prevDeck.cards.find(
+        c => c.scryfall_id === card.scryfall_id && 
+            (c.tags === 'Sideboard' || c.is_sideboard) &&
+            c.id !== cardId
+      )
+      
+      if (card.quantity === 1) {
+        // If only 1 copy
+        if (existingSideboardCard) {
+          // Remove this card and increment existing sideboard
+          return {
+            ...prevDeck,
+            cards: prevDeck.cards
+              .filter(c => c.id !== cardId)
+              .map(c => 
+                c.id === existingSideboardCard.id
+                  ? { ...c, quantity: c.quantity + 1 }
+                  : c
+              )
+          }
+        } else {
+          // Just change tags to sideboard
+          return {
+            ...prevDeck,
+            cards: prevDeck.cards.map(c => 
+              c.id === cardId 
+                ? { ...c, tags: 'Sideboard', is_sideboard: true }
+                : c
+            )
+          }
+        }
+      } else {
+        // If multiple copies
+        if (existingSideboardCard) {
+          // Reduce main quantity and increment existing sideboard
+          return {
+            ...prevDeck,
+            cards: prevDeck.cards.map(c => {
+              if (c.id === cardId) {
+                return { ...c, quantity: c.quantity - 1 }
+              }
+              if (c.id === existingSideboardCard.id) {
+                return { ...c, quantity: c.quantity + 1 }
+              }
+              return c
+            }).filter(c => c.quantity > 0)
+          }
+        } else {
+          // Create new sideboard entry
+          const sideboardCard: DeckCard = {
+            ...card,
+            id: Date.now(), // Temporary ID
+            quantity: 1,
+            tags: 'Sideboard',
+            is_sideboard: true
+          }
+          
+          return {
+            ...prevDeck,
+            cards: [
+              ...prevDeck.cards.map(c => 
+                c.id === cardId 
+                  ? { ...c, quantity: c.quantity - 1 }
+                  : c
+              ).filter(c => c.quantity > 0),
+              sideboardCard
+            ]
+          }
+        }
+      }
+    })
+    
+    setHasUnsavedChanges(true)
+    setToast({
+      message: '1 copy moved to Sideboard',
+      type: 'success'
+    })
+  }
+
+  // Move all copies to sideboard
+  const addAllToSideboard = (cardId: number) => {
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      
+      const card = prevDeck.cards.find(c => c.id === cardId)
+      if (!card) return prevDeck
+      
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.map(c => 
+          c.id === cardId 
+            ? { ...c, tags: 'Sideboard', is_sideboard: true }
+            : c
+        )
+      }
+    })
+    
+    setHasUnsavedChanges(true)
+    console.log('=== END ADD ALL TO SIDEBOARD ===')
+    
+    const card = deck?.cards.find(c => c.id === cardId)
+    setToast({
+      message: `All ${card?.quantity || 0} copies moved to Sideboard`,
+      type: 'success'
+    })
+  }
+  
+  // Update basic land count (local only - saves with deck)
+  const updateBasicLandCount = (landName: string, newCount: number) => {
+    if (newCount < 0) return
+    
+    setBasicLands(prev => ({
+      ...prev,
+      [landName]: newCount
+    }))
+    
+    setHasUnsavedChanges(true)
+    setToast({
+      message: `${landName}: ${newCount}`,
+      type: 'info'
+    })
+  }
+
   const removeSingleCardFromDeck = async (cardId: number) => {
-    try {
-      await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}`, {
-        method: 'DELETE'
+    const isStandardFormat = deck?.format?.toLowerCase() === 'standard'
+    
+    if (isStandardFormat) {
+      // Standard format: Remove optimistically (UI only)
+      setDeck(prevDeck => {
+        if (!prevDeck) return prevDeck
+        return {
+          ...prevDeck,
+          cards: prevDeck.cards.filter(c => c.id !== cardId)
+        }
       })
-      
-      await fetchDeck()
       setCardMenuOpen(null)
-      
-      setToast({
-        message: 'Card removed from deck',
-        type: 'success'
-      })
-    } catch (error) {
-      console.error('Error removing card from deck:', error)
-      setToast({
-        message: 'Failed to remove card',
-        type: 'error'
-      })
+      setHasUnsavedChanges(true)
+    } else {
+      // Commander format: Make API call immediately
+      try {
+        await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}`, {
+          method: 'DELETE'
+        })
+        
+        await fetchDeck()
+        setCardMenuOpen(null)
+        
+        setToast({
+          message: 'Card removed from deck',
+          type: 'success'
+        })
+      } catch (error) {
+        console.error('Error removing card from deck:', error)
+        setToast({
+          message: 'Failed to remove card',
+          type: 'error'
+        })
+      }
     }
+  }
+  
+  // Remove one copy of a card from deck (for Standard format click-to-remove)
+  const removeCardCopyFromDeck = (cardId: number) => {
+    const isStandardFormat = deck?.format?.toLowerCase() === 'standard'
+    
+    if (!isStandardFormat) return // Only for Standard format
+    
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.map(c => {
+          if (c.id === cardId) {
+            // If quantity is 1, we'll filter it out after
+            return { ...c, quantity: c.quantity - 1 }
+          }
+          return c
+        }).filter(c => c.quantity > 0) // Remove cards with 0 quantity
+      }
+    })
+    
+    setHasUnsavedChanges(true)
   }
 
   const openTagModalForSingleCard = (cardId: number) => {
@@ -488,32 +887,38 @@ export default function DeckDetailPage() {
     setCardMenuOpen(null)
   }
 
-  const addTagToSingleCard = async () => {
+  const addTagToSingleCard = () => {
     if (!singleCardForTag || !selectedTagForAssign.trim()) return
     
-    try {
-      await fetch(`${API_URL}/api/decks/${deckId}/cards/${singleCardForTag}/tags`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tags: selectedTagForAssign.trim() })
-      })
-      
-      await fetchDeck()
-      setShowAssignTagModal(false)
-      setSelectedTagForAssign('')
-      setSingleCardForTag(null)
-      
-      // Remove from pending tags if it was there
-      if (pendingTags.has(selectedTagForAssign.trim())) {
-        setPendingTags(prev => {
-          const newSet = new Set(prev)
-          newSet.delete(selectedTagForAssign.trim())
-          return newSet
-        })
+    const tagToAssign = selectedTagForAssign.trim()
+    
+    // Update local state only
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.map(c => 
+          c.id === singleCardForTag 
+            ? { ...c, tags: tagToAssign }
+            : c
+        )
       }
-    } catch (error) {
-      console.error('Error adding tag to card:', error)
+    })
+    
+    setShowAssignTagModal(false)
+    setSelectedTagForAssign('')
+    setSingleCardForTag(null)
+    
+    // Remove from pending tags if it was there
+    if (pendingTags.has(tagToAssign)) {
+      setPendingTags(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(tagToAssign)
+        return newSet
+      })
     }
+    
+    setHasUnsavedChanges(true)
   }
 
   const createNewTag = () => {
@@ -536,7 +941,7 @@ export default function DeckDetailPage() {
     setTagInput('')
   }
 
-  const deleteTag = async (tagName: string) => {
+  const deleteTag = (tagName: string) => {
     const defaultTags = getDefaultTagsForFormat(deck?.format)
     
     // Prevent deletion of default tags
@@ -563,26 +968,35 @@ export default function DeckDetailPage() {
     // Tag is assigned to cards
     if (!confirm(`Remove tag "${tagName}" from all cards?`)) return
     
-    try {
-      // Remove tag from all cards that have it
-      const cardsWithTag = deck?.cards.filter(card => card.tags === tagName) || []
-      for (const card of cardsWithTag) {
-        await fetch(`${API_URL}/api/decks/${deckId}/cards/${card.id}/tags`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tags: '' })
-        })
+    // Update local state only - remove tag from all cards that have it
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.map(c => 
+          c.tags === tagName 
+            ? { ...c, tags: undefined }
+            : c
+        )
       }
-      
-      await fetchDeck()
-    } catch (error) {
-      console.error('Error deleting tag:', error)
-    }
+    })
+    
+    setHasUnsavedChanges(true)
   }
 
+  // Filter collection cards (for Standard format)
   const filteredCollection = collection.filter(card => {
-    if (searchQuery && !card.name.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false
+    // Search filter: Check name, type_line, mana_cost, and oracle_text (card text)
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      const name = (card.name || '').toLowerCase()
+      const typeLine = (card.type_line || '').toLowerCase()
+      const manaCost = (card.mana_cost || '').toLowerCase()
+      const oracleText = (card.oracle_text || '').toLowerCase()
+      
+      if (!name.includes(query) && !typeLine.includes(query) && !manaCost.includes(query) && !oracleText.includes(query)) {
+        return false
+      }
     }
     
     if (typeFilter !== 'all') {
@@ -606,11 +1020,6 @@ export default function DeckDetailPage() {
 
     return true
   })
-
-  const categorizeCards = () => {
-    if (!deck) return {}
-    return tagsViewMode ? categorizeCardsByTags(deck) : categorizeCardsByType(deck)
-  }
 
   if (loading) {
     return (
@@ -650,8 +1059,26 @@ export default function DeckDetailPage() {
     )
   }
 
-  const totalCards = deck.cards.filter(c => !c.is_sideboard).reduce((sum, card) => sum + card.quantity, 0)
-  const sideboardCards = deck.cards.filter(c => c.is_sideboard).reduce((sum, card) => sum + card.quantity, 0)
+  // Check if deck is Standard format
+  const isStandardFormat = deck.format?.toLowerCase() === 'standard'
+
+  // Helper to check if a card is a basic land
+  const isBasicLand = (card: DeckCard) => {
+    const basicLandNames = ['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']
+    return card.type_line?.toLowerCase().includes('basic land') && basicLandNames.includes(card.name)
+  }
+
+  // For Standard format: exclude basic lands from deck.cards (they're tracked separately in basicLands state)
+  // The "Deck (X cards)" count excludes basic lands for Standard since they're shown in separate counter
+  // For other formats: count all cards normally
+  const totalCards = deck.cards.filter(c => c.tags !== 'Sideboard' && !c.is_sideboard && !isBasicLand(c)).reduce((sum, card) => sum + card.quantity, 0)
+  
+  // Total including basic lands (for validation and comprehensive count display)
+  const totalCardsWithBasicLands = isStandardFormat 
+    ? totalCards + Object.values(basicLands).reduce((sum, count) => sum + count, 0)
+    : totalCards
+    
+  const sideboardCards = deck.cards.filter(c => c.tags === 'Sideboard' || c.is_sideboard).reduce((sum, card) => sum + card.quantity, 0)
   const commander = deck.cards.find(c => c.is_commander)
 
   // Deck validation
@@ -661,21 +1088,22 @@ export default function DeckDetailPage() {
     <div className="page-container">
       {/* Header with Deck Name on Top Left */}
       <div className="deck-detail-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <button 
-            onClick={() => router.push('/decks')}
-            className="btn btn-ghost"
-            style={{ 
-              padding: '0.5rem',
-              minWidth: 'auto'
-            }}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>
-            </svg>
-          </button>
-          <div>
-            <h1 className="page-title" style={{ marginBottom: '0.25rem' }}>{deck.name}</h1>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <button 
+              onClick={() => router.push('/decks')}
+              className="btn btn-ghost"
+              style={{ 
+                padding: '0.5rem',
+                minWidth: 'auto'
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>
+              </svg>
+            </button>
+            <div>
+              <h1 className="page-title" style={{ marginBottom: '0.25rem' }}>{deck.name}</h1>
             <div style={{ 
               display: 'flex', 
               alignItems: 'center', 
@@ -698,7 +1126,7 @@ export default function DeckDetailPage() {
                     fontWeight: '600',
                     color: deckValidation.valid ? 'rgba(255, 255, 255, 0.7)' : '#ef4444'
                   }}>
-                    {totalCards} cards
+                    {totalCardsWithBasicLands} cards
                   </span>
                   {!deckValidation.valid && (
                     <div 
@@ -769,12 +1197,123 @@ export default function DeckDetailPage() {
                   )}
                 </div>
               )}
-              {!deck.format && <span>{totalCards} cards</span>}
-              {sideboardCards > 0 && (
-                <span style={{ color: 'rgba(255, 255, 255, 0.5)' }}>
-                  + {sideboardCards} sideboard
-                </span>
+              {/* Deck card count with sideboard and Basic Lands */}
+              {deck.format && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', flex: 1, justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', flexWrap: 'wrap' }}>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>
+                      Deck ({totalCards}{sideboardCards > 0 && (
+                        <span style={{ color: 'var(--text-secondary)' }}>
+                          {' + '}{sideboardCards} sideboard
+                        </span>
+                      )})
+                    </span>
+                    
+                    {/* Basic lands counter - Standard format only */}
+                    {isStandardFormat && (
+                      <div style={{ 
+                        display: 'flex', 
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        padding: '0.25rem 0.75rem',
+                        backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                        border: '1px solid rgba(249, 115, 22, 0.2)',
+                        borderRadius: '6px'
+                      }}>
+                        <span style={{ fontSize: '0.875rem', color: 'var(--text-primary)', fontWeight: '500' }}>
+                          Basic Lands:
+                        </span>
+                        {[
+                          { name: 'Plains', symbol: 'ms ms-w' },
+                          { name: 'Island', symbol: 'ms ms-u' },
+                          { name: 'Swamp', symbol: 'ms ms-b' },
+                          { name: 'Mountain', symbol: 'ms ms-r' },
+                          { name: 'Forest', symbol: 'ms ms-g' }
+                        ].map(land => (
+                          <div key={land.name} style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: '0.25rem',
+                            backgroundColor: 'rgba(0, 0, 0, 0.05)',
+                            padding: '0.25rem 0.5rem',
+                            borderRadius: '4px'
+                          }}>
+                            <button
+                              onClick={() => updateBasicLandCount(land.name, Math.max(0, basicLands[land.name] - 1))}
+                              style={{
+                                width: '20px',
+                                height: '20px',
+                                border: '1px solid var(--border-color)',
+                                backgroundColor: 'var(--bg-secondary)',
+                                color: 'var(--text-primary)',
+                                borderRadius: '3px',
+                                cursor: 'pointer',
+                                fontSize: '0.875rem',
+                                fontWeight: '600',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                padding: 0,
+                                transition: 'all 0.2s'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = 'var(--bg-primary)'
+                                e.currentTarget.style.borderColor = 'var(--accent-primary)'
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+                                e.currentTarget.style.borderColor = 'var(--border-color)'
+                              }}
+                            >
+                              −
+                            </button>
+                            <i className={land.symbol} style={{ fontSize: '1rem', color: 'var(--text-primary)' }} />
+                            <span style={{ 
+                              fontSize: '0.875rem', 
+                              color: 'var(--text-primary)',
+                              minWidth: '1.25rem',
+                              textAlign: 'center',
+                              fontWeight: '500'
+                            }}>
+                              {basicLands[land.name]}
+                            </span>
+                            <button
+                              onClick={() => updateBasicLandCount(land.name, basicLands[land.name] + 1)}
+                              style={{
+                                width: '20px',
+                                height: '20px',
+                                border: '1px solid var(--border-color)',
+                                backgroundColor: 'var(--bg-secondary)',
+                                color: 'var(--text-primary)',
+                                borderRadius: '3px',
+                                cursor: 'pointer',
+                                fontSize: '0.875rem',
+                                fontWeight: '600',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                padding: 0,
+                                transition: 'all 0.2s'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = 'var(--bg-primary)'
+                                e.currentTarget.style.borderColor = 'var(--accent-primary)'
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+                                e.currentTarget.style.borderColor = 'var(--border-color)'
+                              }}
+                            >
+                              +
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
+              {!deck.format && <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{totalCards} cards</span>}
               {commander && (
                 <span style={{ color: '#f97316' }}>
                   Commander: {commander.name}
@@ -782,336 +1321,187 @@ export default function DeckDetailPage() {
               )}
             </div>
           </div>
+          </div>
+          
+          {/* Save Button (Standard format only) */}
+          {isStandardFormat && activeTab === 'deck' && (
+            <button
+              onClick={saveDeckChanges}
+              disabled={!hasUnsavedChanges || isSaving}
+              style={{
+                padding: '0.75rem 1.5rem',
+                backgroundColor: hasUnsavedChanges ? '#10b981' : 'rgba(16, 185, 129, 0.3)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: hasUnsavedChanges && !isSaving ? 'pointer' : 'not-allowed',
+                fontSize: '0.9375rem',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                opacity: hasUnsavedChanges ? 1 : 0.5,
+                transition: 'all 0.2s',
+                boxShadow: hasUnsavedChanges ? '0 2px 8px rgba(16, 185, 129, 0.3)' : 'none'
+              }}
+            >
+              {isSaving ? (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ animation: 'spin 1s linear infinite' }}>
+                    <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  {hasUnsavedChanges ? 'Save Changes' : 'Saved'}
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="decks-tabs" style={{ marginTop: '1.5rem' }}>
-        <button
-          className={`decks-tab ${activeTab === 'deck' ? 'active' : ''}`}
-          onClick={() => setActiveTab('deck')}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V5C21 3.9 20.1 3 19 3ZM19 19H5V5H19V19Z" fill="currentColor"/>
-          </svg>
-          Deck
-        </button>
-
-        <button
-          className={`decks-tab ${activeTab === 'mana-curve' ? 'active' : ''}`}
-          onClick={() => setActiveTab('mana-curve')}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z" fill="currentColor"/>
-          </svg>
-          Stats
-        </button>
-        <button
-          className={`decks-tab ${activeTab === 'add-cards' ? 'active' : ''}`}
-          onClick={() => setActiveTab('add-cards')}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/>
-          </svg>
-          Add Cards
-        </button>
-      </div>
+      <DeckTabs 
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        isStandardFormat={isStandardFormat}
+      />
 
       {/* Deck Content */}
       <div style={{ marginTop: '2rem' }}>
         {activeTab === 'deck' && (
           <>
-            {/* Quick Add Search */}
-            <div style={{ marginBottom: '1.5rem' }}>
-              <QuickAddSearch
-                collection={collection}
-                deckId={deckId}
-                onCardAdded={async () => {
-                  await fetchDeck()
-                  await fetchAllDecks()
-                }}
-                onShowToast={(message, type) => setToast({ message, type })}
-                getAvailableQuantity={getAvailableQuantity}
-              />
-            </div>
+            {isStandardFormat ? (
+              /* Standard Format: Horizontal Collection View */
+              <>
+                <StandardCollectionView 
+                  collection={filteredCollection}
+                  totalCards={totalCards}
+                  getAvailableQuantity={getAvailableQuantity}
+                  quickAddCardToDeck={quickAddCardToDeck}
+                  setHoveredCard={setHoveredCard}
+                  searchQuery={searchQuery}
+                  setSearchQuery={setSearchQuery}
+                  typeFilter={typeFilter}
+                  setTypeFilter={setTypeFilter}
+                  colorFilters={colorFilters}
+                  toggleColorFilter={toggleColorFilter}
+                  clearAllFilters={clearAllFilters}
+                />
+                
+                {/* Unsaved Changes Indicator */}
+                {hasUnsavedChanges && (
+                  <div style={{
+                    padding: '0.75rem 1rem',
+                    backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                    border: '1px solid rgba(249, 115, 22, 0.3)',
+                    borderRadius: '8px',
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    fontSize: '0.875rem',
+                    color: '#f97316'
+                  }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" fill="currentColor"/>
+                    </svg>
+                    <span style={{ fontWeight: '500' }}>
+                      You have unsaved changes. Click the "Save Changes" button in the top right to save your deck.
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* Commander Format: Original Layout */
+              <>
+                {/* Quick Add Search */}
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <QuickAddSearch
+                    collection={collection}
+                    deckId={deckId}
+                    onCardAdded={async () => {
+                      await fetchDeck()
+                      await fetchAllDecks()
+                    }}
+                    onShowToast={(message, type) => setToast({ message, type })}
+                    getAvailableQuantity={getAvailableQuantity}
+                  />
+                </div>
 
-            {/* Basic Lands Section */}
-            <BasicLandsSection
-              deckId={deckId}
-              deckCards={deck.cards}
-              onUpdate={fetchDeck}
+                {/* Basic Lands Section */}
+                <BasicLandsSection
+                  deckId={deckId}
+                  deckCards={deck.cards}
+                  onUpdate={fetchDeck}
+                />
+              </>
+            )}
+
+            {/* Multi-select controls - Show for non-Standard or hide for Standard */}
+            <MultiSelectControls
+              isStandardFormat={isStandardFormat}
+              hasDeckCards={deck.cards.length > 0}
+              multiSelectMode={multiSelectMode}
+              selectedDeckCards={selectedDeckCards}
+              tagsViewMode={tagsViewMode}
+              toggleMultiSelectMode={toggleMultiSelectMode}
+              removeSelectedCardsFromDeck={removeSelectedCardsFromDeck}
+              setShowAssignTagModal={setShowAssignTagModal}
+              setTagsViewMode={setTagsViewMode}
+              setShowManageTagModal={setShowManageTagModal}
             />
 
-            {/* Multi-select controls */}
-            {deck.cards.length > 0 && (
-              <div style={{ 
-                marginBottom: '1.5rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '1rem',
-                flexWrap: 'wrap'
-              }}>
-                {/* Left side - Multi-select controls */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                  <label style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: '0.5rem',
-                    cursor: 'pointer',
-                    fontSize: '0.9375rem',
-                    fontWeight: '500'
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={multiSelectMode}
-                      onChange={toggleMultiSelectMode}
-                      style={{ 
-                        width: '18px', 
-                        height: '18px',
-                        cursor: 'pointer'
-                      }}
-                    />
-                    Multi-select
-                  </label>
-
-                  {multiSelectMode && (
-                    <>
-                      <button
-                        onClick={removeSelectedCardsFromDeck}
-                        disabled={selectedDeckCards.size === 0}
-                        style={{
-                          padding: '0.5rem 1rem',
-                          backgroundColor: selectedDeckCards.size === 0 ? 'rgba(239, 68, 68, 0.3)' : '#ef4444',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '6px',
-                          cursor: selectedDeckCards.size === 0 ? 'not-allowed' : 'pointer',
-                          fontSize: '0.875rem',
-                          fontWeight: '600',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.5rem',
-                          opacity: selectedDeckCards.size === 0 ? 0.5 : 1
-                        }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" fill="currentColor"/>
-                        </svg>
-                        Remove from Deck ({selectedDeckCards.size})
-                      </button>
-                      <button
-                        onClick={() => setShowAssignTagModal(true)}
-                        disabled={selectedDeckCards.size === 0}
-                        style={{
-                          padding: '0.5rem 1rem',
-                          backgroundColor: selectedDeckCards.size === 0 ? 'rgba(59, 130, 246, 0.3)' : '#3b82f6',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '6px',
-                          cursor: selectedDeckCards.size === 0 ? 'not-allowed' : 'pointer',
-                          fontSize: '0.875rem',
-                          fontWeight: '600',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.5rem',
-                          opacity: selectedDeckCards.size === 0 ? 0.5 : 1
-                        }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M17.63 5.84C17.27 5.33 16.67 5 16 5H5C3.9 5 3 5.9 3 7v10c0 1.1.9 2 2 2h11c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z" fill="currentColor"/>
-                        </svg>
-                        Add Tag ({selectedDeckCards.size})
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {/* Right side - Tags view controls */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <label style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: '0.5rem',
-                    cursor: 'pointer',
-                    fontSize: '0.9375rem',
-                    fontWeight: '500'
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={tagsViewMode}
-                      onChange={(e) => setTagsViewMode(e.target.checked)}
-                      style={{ 
-                        width: '18px', 
-                        height: '18px',
-                        cursor: 'pointer'
-                      }}
-                    />
-                    Tags View
-                  </label>
-                  <button
-                    onClick={() => setShowManageTagModal(true)}
-                    style={{
-                      padding: '0.5rem 1rem',
-                      backgroundColor: '#10b981',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '0.875rem',
-                      fontWeight: '600',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem'
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M17.63 5.84C17.27 5.33 16.67 5 16 5H5C3.9 5 3 5.9 3 7v10c0 1.1.9 2 2 2h11c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z" fill="currentColor"/>
-                    </svg>
-                    Manage Tags
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {deck.cards.length > 0 ? (
-              <div style={{ display: 'flex', gap: '2rem' }}>
-                {/* Left side - Card Preview */}
-                <div style={{ 
-                  flex: '0 0 300px',
-                  position: 'sticky',
-                  top: '2rem',
-                  alignSelf: 'flex-start',
-                  minHeight: '500px'
-                }}>
-                  {(hoveredCard || commander) && (
-                    <div>
-                      <div style={{
-                        width: '100%',
-                        aspectRatio: '5/7',
-                        borderRadius: '12px',
-                        overflow: 'hidden',
-                        boxShadow: '0 8px 16px rgba(0, 0, 0, 0.4)',
-                        backgroundColor: 'rgba(0, 0, 0, 0.05)'
-                      }}>
-                        <img 
-                          src={(hoveredCard || commander)!.image_uri || `https://api.scryfall.com/cards/${(hoveredCard || commander)!.scryfall_id}?format=image&version=normal`}
-                          alt={(hoveredCard || commander)!.name}
-                          style={{ 
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'cover'
-                          }}
-                        />
-                      </div>
-                      <div style={{ 
-                        marginTop: '1rem',
-                        textAlign: 'center',
-                        color: 'rgba(0, 0, 0, 0.9)',
-                        minHeight: '60px'
-                      }}>
-                        <div style={{ fontSize: '1.125rem', fontWeight: '600' }}>
-                          {(hoveredCard || commander)!.name}
-                        </div>
-                        {(hoveredCard || commander)!.mana_cost && (
-                          <div style={{ 
-                            fontSize: '0.875rem',
-                            marginTop: '0.25rem',
-                            color: 'rgba(0, 0, 0, 0.6)'
-                          }}>
-                            {(hoveredCard || commander)!.mana_cost}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Right side - Card List */}
-                <div style={{ 
-                  flex: 1,
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(3, 1fr)',
-                  gap: '1.5rem',
-                  alignItems: 'start'
-                }}>
-                  {Object.entries(categorizeCards()).map(([category, cards]) => {
-                    if (cards.length === 0) return null
-                    const totalCount = getCategoryCount(cards)
-                    
-                    return (
-                      <div key={category} style={{ marginBottom: '1rem' }}>
-                        <div style={{ 
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.5rem',
-                          marginBottom: '0.75rem',
-                          paddingBottom: '0.5rem',
-                          borderBottom: '2px solid rgba(0, 0, 0, 0.1)'
-                        }}>
-                          <h3 style={{ 
-                            fontSize: '1rem',
-                            fontWeight: '600',
-                            color: 'rgba(0, 0, 0, 0.9)'
-                          }}>
-                            {category}
-                          </h3>
-                          <span style={{ 
-                            fontSize: '0.875rem',
-                            color: 'rgba(0, 0, 0, 0.5)',
-                            fontWeight: '500'
-                          }}>
-                            ({totalCount})
-                          </span>
-                        </div>
-                        
-                        <div style={{ 
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0rem'
-                        }}>
-                          {cards.map(card => (
-                            <CardListItem
-                              key={card.id}
-                              card={card}
-                              hoveredCard={hoveredCard}
-                              setHoveredCard={setHoveredCard}
-                              multiSelectMode={multiSelectMode}
-                              selectedDeckCards={selectedDeckCards}
-                              toggleDeckCardSelection={toggleDeckCardSelection}
-                              cardMenuOpen={cardMenuOpen}
-                              setCardMenuOpen={setCardMenuOpen}
-                              onRemove={removeSingleCardFromDeck}
-                              allTags={getAllTags(deck, pendingTags)}
-                              deckFormat={deck?.format}
-                              onAddToTag={addCardToTag}
-                              onPromoteCommander={promoteCardAsCommander}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
+            {/* Deck Display Section */}
+            {isStandardFormat ? (
+              <StandardDeckDisplay
+                deck={deck}
+                hoveredCard={hoveredCard}
+                commander={commander}
+                setHoveredCard={setHoveredCard}
+                multiSelectMode={multiSelectMode}
+                selectedDeckCards={selectedDeckCards}
+                toggleDeckCardSelection={toggleDeckCardSelection}
+                cardMenuOpen={cardMenuOpen}
+                setCardMenuOpen={setCardMenuOpen}
+                removeSingleCardFromDeck={removeSingleCardFromDeck}
+                removeCardCopyFromDeck={removeCardCopyFromDeck}
+                addCardToTag={addCardToTag}
+                promoteCardAsCommander={promoteCardAsCommander}
+                onAddToSideboard={addOneToSideboard}
+                onAddAllToSideboard={addAllToSideboard}
+                allTags={getAllTags(deck, pendingTags)}
+                tagsViewMode={tagsViewMode}
+              />
             ) : (
-              <div style={{ 
-                textAlign: 'center',
-                padding: '3rem',
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                borderRadius: '12px'
-              }}>
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ margin: '0 auto 1rem', opacity: 0.3 }}>
-                  <path d="M19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V5C21 3.9 20.1 3 19 3ZM19 19H5V5H19V19Z" fill="currentColor"/>
-                </svg>
-                <h3 style={{ marginBottom: '0.5rem' }}>No Cards Yet</h3>
-                <p style={{ color: 'rgba(255, 255, 255, 0.6)' }}>
-                  Start adding cards to your deck
-                </p>
-              </div>
-            )}
-          </>
-        )}
+              <CommanderDeckDisplay
+                deck={deck}
+                hoveredCard={hoveredCard}
+                commander={commander}
+                setHoveredCard={setHoveredCard}
+                multiSelectMode={multiSelectMode}
+                selectedDeckCards={selectedDeckCards}
+                toggleDeckCardSelection={toggleDeckCardSelection}
+                cardMenuOpen={cardMenuOpen}
+                setCardMenuOpen={setCardMenuOpen}
+                removeSingleCardFromDeck={removeSingleCardFromDeck}
+                allTags={getAllTags(deck, pendingTags)}
+                addCardToTag={addCardToTag}
+                promoteCardAsCommander={promoteCardAsCommander}
+                onAddToSideboard={addOneToSideboard}
+                onAddAllToSideboard={addAllToSideboard}
+                tagsViewMode={tagsViewMode}
+              />
+            )
+          }
+        </>
+      )}
 
         {activeTab === 'mana-curve' && (
           <>

@@ -17,6 +17,7 @@ class DeckCardCreate(BaseModel):
     type_line: Optional[str] = None
     image_uri: Optional[str] = None
     colors: Optional[str] = None
+    tags: Optional[str] = None
 
 class DeckCardResponse(BaseModel):
     id: int
@@ -190,10 +191,12 @@ async def add_card_to_deck(
     if not deck:
         raise HTTPException(status_code=404, detail="Deck not found")
     
-    # Check if card exists in deck
+    # Check if card exists in deck with same scryfall_id AND tags
+    # (same card can exist separately in main deck vs sideboard)
     existing_card = db.query(DeckCard).filter(
         DeckCard.deck_id == deck_id,
-        DeckCard.scryfall_id == card.scryfall_id
+        DeckCard.scryfall_id == card.scryfall_id,
+        DeckCard.tags == card.tags
     ).first()
     
     if existing_card:
@@ -250,10 +253,12 @@ async def add_cards_bulk(
     
     try:
         for card_data in cards:
-            # Check if card exists in deck
+            # Check if card exists in deck with same scryfall_id AND tags
+            # (same card can exist separately in main deck vs sideboard)
             existing_card = db.query(DeckCard).filter(
                 DeckCard.deck_id == deck_id,
-                DeckCard.scryfall_id == card_data.scryfall_id
+                DeckCard.scryfall_id == card_data.scryfall_id,
+                DeckCard.tags == card_data.tags
             ).first()
             
             if existing_card:

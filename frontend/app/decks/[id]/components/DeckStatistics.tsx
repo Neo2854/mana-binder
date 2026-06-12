@@ -7,7 +7,9 @@ interface DeckStatisticsProps {
 }
 
 export default function DeckStatistics({ deck }: DeckStatisticsProps) {
-  const mainDeckCards = deck.cards.filter(c => !c.is_sideboard)
+  // Filter cards by sideboard tag (tags === 'Sideboard')
+  const sideboardCards = deck.cards.filter(c => c.tags === 'Sideboard' || c.is_sideboard)
+  const mainDeckCards = deck.cards.filter(c => c.tags !== 'Sideboard' && !c.is_sideboard)
   
   // Calculate average CMC
   const cardsWithCMC = mainDeckCards.filter(c => {
@@ -151,6 +153,21 @@ export default function DeckStatistics({ deck }: DeckStatisticsProps) {
             {mainDeckCards.length}
           </div>
         </div>
+        
+        {/* Sideboard Cards */}
+        <div style={{
+          backgroundColor: 'rgba(139, 92, 246, 0.1)',
+          padding: '1rem',
+          borderRadius: '8px',
+          border: '1px solid rgba(139, 92, 246, 0.3)'
+        }}>
+          <div style={{ fontSize: '0.75rem', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '0.25rem' }}>
+            Sideboard
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#8b5cf6' }}>
+            {sideboardCards.reduce((sum, card) => sum + card.quantity, 0)}
+          </div>
+        </div>
       </div>
       
       {/* Color Distribution */}
@@ -158,28 +175,93 @@ export default function DeckStatistics({ deck }: DeckStatisticsProps) {
         <div style={{ fontSize: '0.875rem', fontWeight: '600', marginBottom: '0.75rem', color: 'black' }}>
           Color Distribution
         </div>
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-          {Object.entries(colorCounts).filter(([_, count]) => count > 0).map(([color, count]) => (
-            <div 
-              key={color}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                padding: '0.5rem 0.75rem',
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                borderRadius: '6px',
-                fontSize: '0.875rem'
-              }}
-            >
-              <span style={{ fontSize: '1.25rem' }}>{colorSymbols[color]}</span>
-              <span style={{ color: 'rgba(0, 0, 0, 0.7)' }}>{colorNames[color]}</span>
-              <span style={{ fontWeight: 'bold', color: 'black' }}>{count}</span>
-              <span style={{ fontSize: '0.75rem', color: 'rgba(0, 0, 0, 0.5)' }}>
-                ({((count / totalCards) * 100).toFixed(0)}%)
-              </span>
-            </div>
-          ))}
+        <div style={{ display: 'flex', gap: '2rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Pie Chart */}
+          {totalCards > 0 && (() => {
+            const colorData = Object.entries(colorCounts).filter(([_, count]) => count > 0)
+            const colorHexMap: Record<string, string> = {
+              W: '#F0E68C',
+              U: '#0E68AB',
+              B: '#150B00',
+              R: '#D3202A',
+              G: '#00733E',
+              C: '#BEB9B2'
+            }
+            
+            let currentAngle = -90 // Start at top
+            const radius = 80
+            const centerX = 100
+            const centerY = 100
+            
+            return (
+              <svg width="200" height="200" viewBox="0 0 200 200">
+                {colorData.map(([color, count], index) => {
+                  const percentage = count / totalCards
+                  const angle = percentage * 360
+                  const startAngle = currentAngle
+                  const endAngle = currentAngle + angle
+                  
+                  // Calculate path for pie slice
+                  const startRad = (startAngle * Math.PI) / 180
+                  const endRad = (endAngle * Math.PI) / 180
+                  
+                  const x1 = centerX + radius * Math.cos(startRad)
+                  const y1 = centerY + radius * Math.sin(startRad)
+                  const x2 = centerX + radius * Math.cos(endRad)
+                  const y2 = centerY + radius * Math.sin(endRad)
+                  
+                  const largeArcFlag = angle > 180 ? 1 : 0
+                  
+                  const pathData = [
+                    `M ${centerX} ${centerY}`,
+                    `L ${x1} ${y1}`,
+                    `A ${radius} ${radius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
+                    'Z'
+                  ].join(' ')
+                  
+                  currentAngle = endAngle
+                  
+                  return (
+                    <path
+                      key={color}
+                      d={pathData}
+                      fill={colorHexMap[color]}
+                      stroke="white"
+                      strokeWidth="2"
+                      opacity="0.9"
+                    >
+                      <title>{colorNames[color]}: {count} cards ({(percentage * 100).toFixed(1)}%)</title>
+                    </path>
+                  )
+                })}
+              </svg>
+            )
+          })()}
+          
+          {/* Legend */}
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', flex: 1 }}>
+            {Object.entries(colorCounts).filter(([_, count]) => count > 0).map(([color, count]) => (
+              <div 
+                key={color}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  padding: '0.5rem 0.75rem',
+                  backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                  borderRadius: '6px',
+                  fontSize: '0.875rem'
+                }}
+              >
+                <span style={{ fontSize: '1.25rem' }}>{colorSymbols[color]}</span>
+                <span style={{ color: 'rgba(0, 0, 0, 0.7)' }}>{colorNames[color]}</span>
+                <span style={{ fontWeight: 'bold', color: 'black' }}>{count}</span>
+                <span style={{ fontSize: '0.75rem', color: 'rgba(0, 0, 0, 0.5)' }}>
+                  ({((count / totalCards) * 100).toFixed(0)}%)
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
       

@@ -22,6 +22,7 @@ export interface CollectionCard {
   rarity?: string
   mana_cost?: string
   type_line?: string
+  oracle_text?: string
   image_uri?: string
   quantity: number
   colors?: string

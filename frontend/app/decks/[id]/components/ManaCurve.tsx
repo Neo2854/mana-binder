@@ -11,6 +11,8 @@ export default function ManaCurve({ deck }: ManaCurveProps) {
   
   // Calculate CMC for each card
   const cmcDistribution: Record<number, number> = {}
+  // Calculate CMC and color distribution for stacked bar chart
+  const cmcColorDistribution: Record<number, Record<string, number>> = {}
   let landsCount = 0
   
   mainDeckCards.forEach(card => {
@@ -25,6 +27,13 @@ export default function ManaCurve({ deck }: ManaCurveProps) {
     if (!card.mana_cost) {
       // Cards without mana cost (like some special cards)
       cmcDistribution[0] = (cmcDistribution[0] || 0) + card.quantity
+      
+      // Track color distribution
+      if (!cmcColorDistribution[0]) cmcColorDistribution[0] = {}
+      const colors = card.colors ? card.colors.split(',') : ['C']
+      colors.forEach(color => {
+        cmcColorDistribution[0][color] = (cmcColorDistribution[0][color] || 0) + card.quantity
+      })
       return
     }
     
@@ -35,6 +44,13 @@ export default function ManaCurve({ deck }: ManaCurveProps) {
     }, 0)
     
     cmcDistribution[cmc] = (cmcDistribution[cmc] || 0) + card.quantity
+    
+    // Track color distribution for each CMC
+    if (!cmcColorDistribution[cmc]) cmcColorDistribution[cmc] = {}
+    const colors = card.colors ? card.colors.split(',') : ['C']
+    colors.forEach(color => {
+      cmcColorDistribution[cmc][color] = (cmcColorDistribution[cmc][color] || 0) + card.quantity
+    })
   })
   
   // Get max CMC for scaling
@@ -115,136 +131,148 @@ export default function ManaCurve({ deck }: ManaCurveProps) {
         </div>
       </div>
       
-      {/* Bar Chart */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'flex-end',
-        gap: '0.75rem',
-        height: '300px',
-        padding: '1rem',
-        borderBottom: '2px solid rgba(255, 255, 255, 0.2)',
-        borderLeft: '2px solid rgba(255, 255, 255, 0.2)'
-      }}>
-        {displayCMC.map(({ cmc, count }) => {
-          const heightPercent = (count / maxCount) * 100
-          return (
-            <div
-              key={cmc}
-              style={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '0.5rem'
-              }}
-            >
-              {/* Count label */}
-              <div style={{
-                fontSize: '0.875rem',
-                fontWeight: 'bold',
-                color: count > 0 ? 'black' : 'rgba(0, 0, 0, 0.3)',
-                minHeight: '1.25rem'
-              }}>
-                {count > 0 ? count : ''}
-              </div>
-              
-              {/* Bar */}
-              <div
-                style={{
-                  width: '100%',
-                  height: `${heightPercent}%`,
-                  backgroundColor: count > 0 ? '#3b82f6' : 'rgba(255, 255, 255, 0.1)',
-                  borderRadius: '4px 4px 0 0',
-                  transition: 'all 0.3s ease',
-                  position: 'relative',
-                  cursor: 'default'
-                }}
-                title={`${count} cards with CMC ${cmc}${cmc >= 7 ? '+' : ''}`}
-              >
-                {count > 0 && (
-                  <div style={{
-                    position: 'absolute',
-                    top: '-2px',
-                    left: 0,
-                    right: 0,
-                    height: '2px',
-                    backgroundColor: '#60a5fa'
-                  }} />
-                )}
-              </div>
-              
-              {/* CMC label */}
-              <div style={{
-                fontSize: '0.875rem',
-                fontWeight: '600',
-                color: 'rgba(0, 0, 0, 0.7)',
-                marginTop: '0.5rem'
-              }}>
-                {cmc >= 7 ? '7+' : cmc}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      
-      {/* Card List by CMC */}
+      {/* Stacked Color Bar Graph */}
       <div style={{ marginTop: '2rem' }}>
         <h3 style={{
           fontSize: '1rem',
           fontWeight: '600',
-          marginBottom: '1rem',
+          marginBottom: '1.5rem',
           color: 'black'
         }}>
-          Cards by Mana Cost
+          Color Distribution by Mana Cost
         </h3>
+        
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
-          gap: '1rem'
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'center',
+          gap: '0.4rem',
+          height: '280px',
+          padding: '1rem 2rem',
+          borderBottom: '2px solid rgba(255, 255, 255, 0.2)',
+          borderLeft: '2px solid rgba(255, 255, 255, 0.2)'
         }}>
-          {displayCMC.filter(({ count }) => count > 0).map(({ cmc, count }) => {
-            const cardsAtCMC = mainDeckCards.filter(card => {
-              const type = card.type_line?.toLowerCase() || ''
-              if (type.includes('land')) return false
-              
-              if (!card.mana_cost) return cmc === 0
-              
-              const matches = card.mana_cost.match(/\d+|[WUBRG]/g) || []
-              const cardCMC = matches.reduce((acc, match) => {
-                return acc + (isNaN(Number(match)) ? 1 : Number(match))
-              }, 0)
-              
-              return cmc >= 7 ? cardCMC >= 7 : cardCMC === cmc
-            })
+          {Array.from({ length: 16 }, (_, i) => i).map(cmc => {
+            const colorCounts = cmcColorDistribution[cmc] || {}
+            const totalAtCMC = Object.values(colorCounts).reduce((sum, count) => sum + count, 0)
+            const maxCountOverall = Math.max(...Object.values(cmcDistribution), 1)
+            // Improve scaling: use logarithmic scale for better visualization
+            const heightPercent = totalAtCMC > 0 ? Math.max((totalAtCMC / maxCountOverall) * 100, 5) : 0
+            
+            const colorHexMap: Record<string, string> = {
+              W: '#F0E68C',
+              U: '#0E68AB',
+              B: '#150B00',
+              R: '#D3202A',
+              G: '#00733E',
+              C: '#BEB9B2'
+            }
+            
+            const colorOrder = ['W', 'U', 'B', 'R', 'G', 'C']
+            const sortedColors = colorOrder.filter(color => (colorCounts[color] || 0) > 0)
             
             return (
               <div
                 key={cmc}
                 style={{
-                  padding: '0.75rem',
-                  backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                  borderRadius: '8px',
-                  border: '1px solid rgba(255, 255, 255, 0.1)'
+                  width: '40px',
+                  maxWidth: '40px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '0.5rem'
                 }}
               >
+                {/* Count label */}
                 <div style={{
-                  fontSize: '0.875rem',
-                  fontWeight: '600',
-                  marginBottom: '0.5rem',
-                  color: '#3b82f6'
+                  fontSize: '0.75rem',
+                  fontWeight: 'bold',
+                  color: totalAtCMC > 0 ? 'black' : 'rgba(0, 0, 0, 0.3)',
+                  minHeight: '1rem'
                 }}>
-                  CMC {cmc >= 7 ? '7+' : cmc} ({count} cards)
+                  {totalAtCMC > 0 ? totalAtCMC : ''}
                 </div>
-                <div style={{ fontSize: '0.75rem', color: 'rgba(0, 0, 0, 0.7)' }}>
-                  {cardsAtCMC.map(card => (
-                    <div key={card.id} style={{ marginBottom: '0.25rem' }}>
-                      {card.quantity}x {card.name}
-                    </div>
-                  ))}
+                
+                {/* Stacked Bar */}
+                <div
+                  style={{
+                    width: '100%',
+                    height: `${heightPercent}%`,
+                    display: 'flex',
+                    flexDirection: 'column-reverse',
+                    borderRadius: '4px 4px 0 0',
+                    overflow: 'hidden',
+                    backgroundColor: totalAtCMC === 0 ? 'rgba(255, 255, 255, 0.1)' : 'transparent'
+                  }}
+                  title={`CMC ${cmc}: ${totalAtCMC} cards`}
+                >
+                  {sortedColors.map((color) => {
+                    const count = colorCounts[color] || 0
+                    const colorPercent = (count / totalAtCMC) * 100
+                    
+                    return (
+                      <div
+                        key={color}
+                        style={{
+                          height: `${colorPercent}%`,
+                          backgroundColor: colorHexMap[color],
+                          borderTop: '1px solid rgba(255, 255, 255, 0.3)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '0.6rem',
+                          color: color === 'B' ? 'white' : 'rgba(0, 0, 0, 0.7)',
+                          fontWeight: 'bold'
+                        }}
+                        title={`${color}: ${count} cards`}
+                      >
+                        {count > 0 && colorPercent > 15 ? count : ''}
+                      </div>
+                    )
+                  })}
+                </div>
+                
+                {/* CMC label */}
+                <div style={{
+                  fontSize: '0.75rem',
+                  fontWeight: '600',
+                  color: 'rgba(0, 0, 0, 0.7)',
+                  marginTop: '0.5rem'
+                }}>
+                  {cmc}
                 </div>
               </div>
             )
           })}
+        </div>
+        
+        {/* Color Legend */}
+        <div style={{ 
+          marginTop: '1rem', 
+          display: 'flex', 
+          gap: '1rem', 
+          justifyContent: 'center',
+          flexWrap: 'wrap'
+        }}>
+          {[
+            { code: 'W', name: 'White', hex: '#F0E68C' },
+            { code: 'U', name: 'Blue', hex: '#0E68AB' },
+            { code: 'B', name: 'Black', hex: '#150B00' },
+            { code: 'R', name: 'Red', hex: '#D3202A' },
+            { code: 'G', name: 'Green', hex: '#00733E' },
+            { code: 'C', name: 'Colorless', hex: '#BEB9B2' }
+          ].map(({ code, name, hex }) => (
+            <div key={code} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{
+                width: '16px',
+                height: '16px',
+                backgroundColor: hex,
+                borderRadius: '3px',
+                border: '1px solid rgba(0, 0, 0, 0.2)'
+              }} />
+              <span style={{ fontSize: '0.875rem', color: 'rgba(0, 0, 0, 0.7)' }}>{name}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
