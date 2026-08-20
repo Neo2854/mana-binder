@@ -185,6 +185,28 @@ export default function StandardCollectionView({
               >
                 <span style={{ fontSize: '0.75rem', fontWeight: '600' }}>G</span>
               </button>
+              <button
+                className={`color-filter-btn ${colorFilters.has('C') ? 'active' : ''}`}
+                onClick={() => toggleColorFilter('C')}
+                title="Colorless"
+                style={{ 
+                  backgroundColor: colorFilters.has('C') ? '#6b7280' : '#d1d5db',
+                  border: colorFilters.has('C') ? '2px solid #374151' : '2px solid #9ca3af',
+                  color: 'white',
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  opacity: colorFilters.has('C') ? 1 : 0.6,
+                  boxShadow: colorFilters.has('C') ? '0 2px 8px rgba(107,114,128,0.4)' : 'none'
+                }}
+              >
+                <span style={{ fontSize: '0.75rem', fontWeight: '600' }}>C</span>
+              </button>
             </div>
             
             <div style={{ width: '1px', height: '24px', backgroundColor: '#e5e7eb' }}></div>

@@ -21,6 +21,23 @@ import CommanderDeckDisplay from './components/CommanderDeckDisplay'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+const BASIC_LAND_NAMES = ['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']
+const MANA_COLOR_SYMBOL_REGEX = /\{(?:W|U|B|R|G|2\/W|2\/U|2\/B|2\/R|2\/G|W\/U|W\/B|U\/B|U\/R|B\/R|B\/G|R\/G|R\/W|G\/W|G\/U)\}/i
+const MANA_COLOR_WORD_REGEX = /\b(?:white|blue|black|red|green)\b/i
+
+const isBasicLandCard = (card: Pick<DeckCard, 'name' | 'type_line'>) => {
+  return !!card.type_line?.toLowerCase().includes('basic land') && BASIC_LAND_NAMES.includes(card.name)
+}
+
+const isLandCard = (card: Pick<CollectionCard, 'type_line'>) => {
+  return !!card.type_line?.toLowerCase().includes('land')
+}
+
+const hasStoredColorIndicators = (card: Pick<CollectionCard, 'name' | 'mana_cost' | 'oracle_text'>) => {
+  const searchableText = [card.name, card.mana_cost, card.oracle_text].filter(Boolean).join(' ')
+  return MANA_COLOR_SYMBOL_REGEX.test(searchableText) || MANA_COLOR_WORD_REGEX.test(searchableText)
+}
+
 export default function DeckDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -108,11 +125,10 @@ export default function DeckDetailPage() {
         return
       }
       
-      // Ctrl/Cmd + S: Save deck changes (Standard format only)
+      // Ctrl/Cmd + S: Save deck changes
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()
-        const isStandard = deck?.format?.toLowerCase() === 'standard'
-        if (isStandard && hasUnsavedChanges && activeTab === 'deck') {
+        if (hasUnsavedChanges && activeTab === 'deck') {
           saveDeckChanges()
         }
         return
@@ -165,36 +181,31 @@ export default function DeckDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, multiSelectMode, selectedCards, selectedDeckCards, deckId, deck, hasUnsavedChanges])
   
-  // Initialize basic lands from deck cards (Standard format only)
-  useEffect(() => {
-    if (deck && deck.format?.toLowerCase() === 'standard') {
-      const landsFromDeck: Record<string, number> = {
-        'Plains': 0,
-        'Island': 0,
-        'Swamp': 0,
-        'Mountain': 0,
-        'Forest': 0
-      }
-      
-      deck.cards.forEach(card => {
-        const isBasicLand = card.type_line?.toLowerCase().includes('basic land')
-        const landName = card.name
-        if (isBasicLand && landsFromDeck.hasOwnProperty(landName) && !card.is_sideboard && card.tags !== 'Sideboard') {
-          landsFromDeck[landName] = card.quantity
-        }
-      })
-      
-      setBasicLands(landsFromDeck)
-    }
-  }, [deck])
-
   const fetchDeck = async () => {
     setLoading(true)
     try {
       const response = await fetch(`${API_URL}/api/decks/${deckId}`)
       if (response.ok) {
         const data = await response.json()
-        setDeck(data)
+        const landsFromDeck: Record<string, number> = {
+          'Plains': 0,
+          'Island': 0,
+          'Swamp': 0,
+          'Mountain': 0,
+          'Forest': 0
+        }
+
+        data.cards.forEach((card: DeckCard) => {
+          if (isBasicLandCard(card) && !card.is_sideboard && card.tags !== 'Sideboard') {
+            landsFromDeck[card.name] = card.quantity
+          }
+        })
+
+        setBasicLands(landsFromDeck)
+        setDeck({
+          ...data,
+          cards: data.cards.filter((card: DeckCard) => !isBasicLandCard(card))
+        })
       } else {
         console.error('Deck not found')
         router.push('/decks')
@@ -444,7 +455,7 @@ export default function DeckDetailPage() {
     setIsSaving(true)
     try {
       // Get all cards (including sideboard) that need to be synced
-      const cardsToSync = deck.cards
+      const cardsToSync = deck.cards.filter(card => !isBasicLandCard(card))
       
       // Delete all existing cards and re-add (simplest approach)
       // First, fetch current deck to get real card IDs
@@ -478,31 +489,28 @@ export default function DeckDetailPage() {
         })
       }
       
-      // Add basic lands (Standard format only)
-      if (deck.format?.toLowerCase() === 'standard') {
-        for (const [landName, count] of Object.entries(basicLands)) {
-          if (count > 0) {
-            // Fetch land data from Scryfall
-            const scryfallResponse = await fetch(`https://api.scryfall.com/cards/named?exact=${encodeURIComponent(landName)}`)
-            const scryfallData = await scryfallResponse.json()
-            
-            await fetch(`${API_URL}/api/decks/${deckId}/cards`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                scryfall_id: scryfallData.id,
-                name: landName,
-                quantity: count,
-                is_commander: false,
-                is_sideboard: false,
-                mana_cost: scryfallData.mana_cost || '',
-                type_line: scryfallData.type_line,
-                image_uri: scryfallData.image_uris?.normal || '',
-                colors: scryfallData.colors?.join(',') || '',
-                tags: null
-              })
+      // Add basic lands from local state after main deck cards are synced.
+      for (const [landName, count] of Object.entries(basicLands)) {
+        if (count > 0) {
+          const scryfallResponse = await fetch(`https://api.scryfall.com/cards/named?exact=${encodeURIComponent(landName)}`)
+          const scryfallData = await scryfallResponse.json()
+
+          await fetch(`${API_URL}/api/decks/${deckId}/cards`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              scryfall_id: scryfallData.id,
+              name: landName,
+              quantity: count,
+              is_commander: false,
+              is_sideboard: false,
+              mana_cost: scryfallData.mana_cost || '',
+              type_line: scryfallData.type_line,
+              image_uri: scryfallData.image_uris?.normal || '',
+              colors: scryfallData.colors?.join(',') || '',
+              tags: null
             })
-          }
+          })
         }
       }
       
@@ -559,33 +567,23 @@ export default function DeckDetailPage() {
     if (selectedDeckCards.size === 0) return
     
     const count = selectedDeckCards.size
-    
-    try {
-      // Remove each selected card
-      const cardIds = Array.from(selectedDeckCards)
-      for (const cardId of cardIds) {
-        await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}`, {
-          method: 'DELETE'
-        })
+
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.filter(card => !selectedDeckCards.has(card.id))
       }
-      
-      // Refresh deck and clear selection
-      await fetchDeck()
-      await fetchAllDecks()
-      setSelectedDeckCards(new Set())
-      setMultiSelectMode(false)
-      
-      setToast({
-        message: `Removed ${count} card${count > 1 ? 's' : ''} from deck`,
-        type: 'success'
-      })
-    } catch (error) {
-      console.error('Error removing cards from deck:', error)
-      setToast({
-        message: 'Failed to remove cards',
-        type: 'error'
-      })
-    }
+    })
+
+    setSelectedDeckCards(new Set())
+    setMultiSelectMode(false)
+    setHasUnsavedChanges(true)
+
+    setToast({
+      message: `Removed ${count} card${count > 1 ? 's' : ''} from deck`,
+      type: 'success'
+    })
   }
 
   const addTagsToSelectedCards = () => {
@@ -820,41 +818,20 @@ export default function DeckDetailPage() {
   }
 
   const removeSingleCardFromDeck = async (cardId: number) => {
-    const isStandardFormat = deck?.format?.toLowerCase() === 'standard'
-    
-    if (isStandardFormat) {
-      // Standard format: Remove optimistically (UI only)
-      setDeck(prevDeck => {
-        if (!prevDeck) return prevDeck
-        return {
-          ...prevDeck,
-          cards: prevDeck.cards.filter(c => c.id !== cardId)
-        }
-      })
-      setCardMenuOpen(null)
-      setHasUnsavedChanges(true)
-    } else {
-      // Commander format: Make API call immediately
-      try {
-        await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}`, {
-          method: 'DELETE'
-        })
-        
-        await fetchDeck()
-        setCardMenuOpen(null)
-        
-        setToast({
-          message: 'Card removed from deck',
-          type: 'success'
-        })
-      } catch (error) {
-        console.error('Error removing card from deck:', error)
-        setToast({
-          message: 'Failed to remove card',
-          type: 'error'
-        })
+    setDeck(prevDeck => {
+      if (!prevDeck) return prevDeck
+      return {
+        ...prevDeck,
+        cards: prevDeck.cards.filter(c => c.id !== cardId)
       }
-    }
+    })
+    setCardMenuOpen(null)
+    setHasUnsavedChanges(true)
+
+    setToast({
+      message: 'Card removed from deck',
+      type: 'success'
+    })
   }
   
   // Remove one copy of a card from deck (for Standard format click-to-remove)
@@ -1011,14 +988,32 @@ export default function DeckDetailPage() {
     }
 
     if (colorFilters.size > 0) {
-      const cardColors = card.colors ? card.colors.split(',') : []
-      if (cardColors.length === 0) return false
-      const allColorsSelected = cardColors.every((color: string) => colorFilters.has(color))
-      const noExtraColors = cardColors.length <= colorFilters.size
+      const cardColors = card.colors ? card.colors.split(',').filter(Boolean) : []
+      const isColorless = isLandCard(card) || (cardColors.length === 0 && !hasStoredColorIndicators(card))
+
+      // 'C' filter matches lands and non-lands with no stored color indicators.
+      if (isColorless) return colorFilters.has('C')
+
+      // For colored cards, exclude 'C' from the comparison set
+      const nonCFilters = new Set(Array.from(colorFilters).filter(c => c !== 'C'))
+      if (nonCFilters.size === 0) return false
+      const allColorsSelected = cardColors.every((color: string) => nonCFilters.has(color))
+      const noExtraColors = cardColors.length <= nonCFilters.size
       return allColorsSelected && noExtraColors
     }
 
     return true
+  })
+
+  // Keep add-cards view deterministic and easy to scan.
+  const sortedFilteredCollection = [...filteredCollection].sort((a, b) => {
+    const nameA = (a.name || '').toLowerCase()
+    const nameB = (b.name || '').toLowerCase()
+
+    const nameCompare = nameA.localeCompare(nameB)
+    if (nameCompare !== 0) return nameCompare
+
+    return (a.set_code || '').localeCompare(b.set_code || '')
   })
 
   if (loading) {
@@ -1062,21 +1057,11 @@ export default function DeckDetailPage() {
   // Check if deck is Standard format
   const isStandardFormat = deck.format?.toLowerCase() === 'standard'
 
-  // Helper to check if a card is a basic land
-  const isBasicLand = (card: DeckCard) => {
-    const basicLandNames = ['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']
-    return card.type_line?.toLowerCase().includes('basic land') && basicLandNames.includes(card.name)
-  }
+  // Main deck count excludes basic lands because they are managed in basicLands state.
+  const totalCards = deck.cards.filter(c => c.tags !== 'Sideboard' && !c.is_sideboard).reduce((sum, card) => sum + card.quantity, 0)
 
-  // For Standard format: exclude basic lands from deck.cards (they're tracked separately in basicLands state)
-  // The "Deck (X cards)" count excludes basic lands for Standard since they're shown in separate counter
-  // For other formats: count all cards normally
-  const totalCards = deck.cards.filter(c => c.tags !== 'Sideboard' && !c.is_sideboard && !isBasicLand(c)).reduce((sum, card) => sum + card.quantity, 0)
-  
-  // Total including basic lands (for validation and comprehensive count display)
-  const totalCardsWithBasicLands = isStandardFormat 
-    ? totalCards + Object.values(basicLands).reduce((sum, count) => sum + count, 0)
-    : totalCards
+  // Overall count includes basic lands for all formats.
+  const totalCardsWithBasicLands = totalCards + Object.values(basicLands).reduce((sum, count) => sum + count, 0)
     
   const sideboardCards = deck.cards.filter(c => c.tags === 'Sideboard' || c.is_sideboard).reduce((sum, card) => sum + card.quantity, 0)
   const commander = deck.cards.find(c => c.is_commander)
@@ -1202,7 +1187,7 @@ export default function DeckDetailPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', flex: 1, justifyContent: 'space-between', flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', flexWrap: 'wrap' }}>
                     <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>
-                      Deck ({totalCards}{sideboardCards > 0 && (
+                      Deck ({totalCardsWithBasicLands}{sideboardCards > 0 && (
                         <span style={{ color: 'var(--text-secondary)' }}>
                           {' + '}{sideboardCards} sideboard
                         </span>
@@ -1323,8 +1308,8 @@ export default function DeckDetailPage() {
           </div>
           </div>
           
-          {/* Save Button (Standard format only) */}
-          {isStandardFormat && activeTab === 'deck' && (
+          {/* Save Button */}
+          {activeTab === 'deck' && (
             <button
               onClick={saveDeckChanges}
               disabled={!hasUnsavedChanges || isSaving}
@@ -1437,9 +1422,8 @@ export default function DeckDetailPage() {
 
                 {/* Basic Lands Section */}
                 <BasicLandsSection
-                  deckId={deckId}
-                  deckCards={deck.cards}
-                  onUpdate={fetchDeck}
+                  basicLands={basicLands}
+                  onUpdateBasicLandCount={updateBasicLandCount}
                 />
               </>
             )}
@@ -1614,6 +1598,16 @@ export default function DeckDetailPage() {
                         <circle cx="12" cy="12" r="10" fill="currentColor"/>
                       </svg>
                     </button>
+                    <button
+                      className={`color-filter-btn ${colorFilters.has('C') ? 'active' : ''}`}
+                      onClick={() => toggleColorFilter('C')}
+                      title="Colorless"
+                      style={{ backgroundColor: colorFilters.has('C') ? '#9ca3af' : 'transparent', color: colorFilters.has('C') ? 'white' : '#9ca3af' }}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L22 12L12 22L2 12L12 2Z" fill="currentColor"/>
+                      </svg>
+                    </button>
                   </div>
                 </div>
 
@@ -1655,7 +1649,7 @@ export default function DeckDetailPage() {
                 <div className="spinner"></div>
                 <p>Loading collection...</p>
               </div>
-            ) : filteredCollection.length === 0 ? (
+            ) : sortedFilteredCollection.length === 0 ? (
               <div style={{ 
                 textAlign: 'center',
                 padding: '3rem',
@@ -1677,10 +1671,10 @@ export default function DeckDetailPage() {
             ) : (
               <div>
                 <div style={{ marginBottom: '1rem', color: 'rgba(255, 255, 255, 0.7)' }}>
-                  Showing {filteredCollection.length} cards
+                  Showing {sortedFilteredCollection.length} cards
                 </div>
                 <div className="card-grid card-grid-collection">
-                  {filteredCollection.map(card => {
+                  {sortedFilteredCollection.map(card => {
                     const availableQty = getAvailableQuantity(card)
                     const usage = getCardUsageInDecks(card.scryfall_id)
                     const isAvailable = availableQty > 0

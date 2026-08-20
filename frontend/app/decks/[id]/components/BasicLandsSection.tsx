@@ -1,7 +1,3 @@
-import { DeckCard } from '../types'
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
 interface BasicLandType {
   name: string
   color: string
@@ -17,78 +13,23 @@ const BASIC_LANDS: BasicLandType[] = [
 ]
 
 interface BasicLandsSectionProps {
-  deckId: string
-  deckCards: DeckCard[]
-  onUpdate: () => void
+  basicLands: Record<string, number>
+  onUpdateBasicLandCount: (landName: string, newCount: number) => void
 }
 
-export default function BasicLandsSection({ deckId, deckCards, onUpdate }: BasicLandsSectionProps) {
+export default function BasicLandsSection({ basicLands, onUpdateBasicLandCount }: BasicLandsSectionProps) {
   const getBasicLandCount = (landName: string): number => {
-    const card = deckCards.find(c => c.name === landName && c.type_line?.includes('Basic Land') && !c.is_sideboard)
-    return card ? card.quantity : 0
-  }
-
-  const getBasicLandCardId = (landName: string): number | null => {
-    const card = deckCards.find(c => c.name === landName && c.type_line?.includes('Basic Land') && !c.is_sideboard)
-    return card ? card.id : null
-  }
-
-  const updateBasicLandCount = async (landName: string, newCount: number) => {
-    if (newCount < 0) return
-
-    try {
-      const cardId = getBasicLandCardId(landName)
-      
-      if (cardId) {
-        // Card exists in deck - update quantity
-        if (newCount === 0) {
-          // Remove card
-          await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}`, {
-            method: 'DELETE',
-          })
-        } else {
-          // Update quantity
-          await fetch(`${API_URL}/api/decks/${deckId}/cards/${cardId}/quantity?quantity=${newCount}`, {
-            method: 'PATCH',
-          })
-        }
-      } else if (newCount > 0) {
-        // Card doesn't exist - add it
-        // We'll use a generic Scryfall ID - in production you'd want specific art
-        const scryfallResponse = await fetch(`https://api.scryfall.com/cards/named?exact=${encodeURIComponent(landName)}`)
-        const scryfallData = await scryfallResponse.json()
-        
-        await fetch(`${API_URL}/api/decks/${deckId}/cards`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scryfall_id: scryfallData.id,
-            name: landName,
-            quantity: newCount,
-            is_commander: false,
-            mana_cost: scryfallData.mana_cost || '',
-            type_line: scryfallData.type_line,
-            image_uri: scryfallData.image_uris?.normal || '',
-            colors: scryfallData.colors?.join(',') || ''
-          })
-        })
-      }
-      
-      // Refresh deck data
-      onUpdate()
-    } catch (error) {
-      console.error('Error updating basic land count:', error)
-    }
+    return basicLands[landName] || 0
   }
 
   const handleIncrement = (landName: string) => {
     const currentCount = getBasicLandCount(landName)
-    updateBasicLandCount(landName, currentCount + 1)
+    onUpdateBasicLandCount(landName, currentCount + 1)
   }
 
   const handleDecrement = (landName: string) => {
     const currentCount = getBasicLandCount(landName)
-    updateBasicLandCount(landName, currentCount - 1)
+    onUpdateBasicLandCount(landName, currentCount - 1)
   }
 
   return (

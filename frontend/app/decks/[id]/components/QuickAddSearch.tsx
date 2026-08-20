@@ -31,9 +31,19 @@ export default function QuickAddSearch({
       const filtered = collection.filter(card =>
         card.name.toLowerCase().includes(query.toLowerCase()) &&
         getAvailableQuantity(card) > 0
-      ).slice(0, 10) // Limit to 10 suggestions
-      setSuggestions(filtered)
-      setIsOpen(filtered.length > 0)
+      )
+
+      const sorted = filtered
+        .sort((a, b) => {
+          const nameCompare = a.name.localeCompare(b.name)
+          if (nameCompare !== 0) return nameCompare
+          return (a.set_code || '').localeCompare(b.set_code || '')
+        })
+        .slice(0, 10) // Limit to 10 suggestions
+
+      // Keep suggestion order stable and predictable for quick keyboard selection.
+      setSuggestions(sorted)
+      setIsOpen(sorted.length > 0)
       setSelectedIndex(0)
     } else {
       setSuggestions([])

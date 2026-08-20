@@ -9,7 +9,14 @@ export default function Navigation() {
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <div className="logo">⚡️ ManaGate</div>
+        <div className="logo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: '0.5rem' }}>
+            <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor" opacity="0.8"/>
+            <path d="M2 17L12 22L22 17V12L12 17L2 12V17Z" fill="currentColor"/>
+            <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.6"/>
+          </svg>
+          ManaGate
+        </div>
       </div>
       
       <nav className="sidebar-nav">
