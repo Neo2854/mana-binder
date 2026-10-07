@@ -1027,6 +1027,19 @@ main {
   min-width: 280px;
 }
 
+.filter-group-multi {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 280px;
+}
+
+.collection-filter-chips {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .filter-label {
   font-weight: 600;
   color: var(--text-secondary);

@@ -43,12 +43,17 @@ interface CollectionCard {
   set_name?: string
   rarity?: string
   mana_cost?: string
+  cmc?: number
   type_line?: string
   oracle_text?: string
   image_uri?: string
+  price?: string
+  purchase_price?: string
   quantity: number
   colors?: string
 }
+
+type CardLegalities = Record<string, string>
 
 interface Folder {
   id: number
@@ -64,8 +69,13 @@ export default function CollectionPage() {
   const [folders, setFolders] = useState<Folder[]>([])
   const [selectedFolder, setSelectedFolder] = useState<number | null>(null)
   const [collectionFilter, setCollectionFilter] = useState('')
-  const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [typeFilters, setTypeFilters] = useState<Set<string>>(new Set())
+  const [rarityFilters, setRarityFilters] = useState<Set<string>>(new Set())
   const [colorFilters, setColorFilters] = useState<Set<string>>(new Set())
+  const [legalityFormatFilter, setLegalityFormatFilter] = useState<string>('all')
+  const [manaValueFilter, setManaValueFilter] = useState<string>('all')
+  const [cardLegalities, setCardLegalities] = useState<Record<string, CardLegalities>>({})
+  const [sortOption, setSortOption] = useState<string>('name')
   const [showNewFolderForm, setShowNewFolderForm] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [newFolderDescription, setNewFolderDescription] = useState('')
@@ -100,7 +110,62 @@ export default function CollectionPage() {
   // Reset to first page when filters change
   useEffect(() => {
     setCurrentPage(1)
-  }, [collectionFilter, typeFilter, colorFilters, selectedFolder])
+  }, [collectionFilter, typeFilters, rarityFilters, colorFilters, legalityFormatFilter, manaValueFilter, selectedFolder, sortOption])
+
+  useEffect(() => {
+    const uncachedIds = collection
+      .map((card) => card.scryfall_id)
+      .filter((scryfallId) => !cardLegalities[scryfallId])
+
+    if (uncachedIds.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    const fetchLegalitiesForCollection = async () => {
+      const batchSize = 75
+      const fetchedLegalities: Record<string, CardLegalities> = {}
+
+      for (let index = 0; index < uncachedIds.length; index += batchSize) {
+        const batchIds = uncachedIds.slice(index, index + batchSize)
+        const response = await fetch('https://api.scryfall.com/cards/collection', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            identifiers: batchIds.map((id) => ({ id }))
+          })
+        })
+
+        if (!response.ok) {
+          continue
+        }
+
+        const data = await response.json()
+        if (!Array.isArray(data.data)) {
+          continue
+        }
+
+        for (const card of data.data) {
+          if (card.id && card.legalities) {
+            fetchedLegalities[card.id] = card.legalities
+          }
+        }
+      }
+
+      if (!cancelled && Object.keys(fetchedLegalities).length > 0) {
+        setCardLegalities((prev) => ({ ...prev, ...fetchedLegalities }))
+      }
+    }
+
+    fetchLegalitiesForCollection().catch((error) => {
+      console.error('Error fetching card legalities:', error)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [collection, cardLegalities])
 
   const fetchData = async () => {
     setLoading(true)
@@ -153,8 +218,8 @@ export default function CollectionPage() {
     if (card.image_uris) {
       return card.image_uris[size]
     }
-    if (card.card_faces && card.card_faces[faceIndex]?.image_uris) {
-      return card.card_faces[faceIndex].image_uris[size]
+    if (card.card_faces && card.card_faces[faceIndex]) {
+      return card.card_faces[faceIndex]?.image_uris?.[size]
     }
     return undefined
   }
@@ -452,9 +517,32 @@ export default function CollectionPage() {
     setColorFilters(newFilters)
   }
 
+  const toggleTypeFilter = (type: string) => {
+    const newFilters = new Set(typeFilters)
+    if (newFilters.has(type)) {
+      newFilters.delete(type)
+    } else {
+      newFilters.add(type)
+    }
+    setTypeFilters(newFilters)
+  }
+
+  const toggleRarityFilter = (rarity: string) => {
+    const newFilters = new Set(rarityFilters)
+    if (newFilters.has(rarity)) {
+      newFilters.delete(rarity)
+    } else {
+      newFilters.add(rarity)
+    }
+    setRarityFilters(newFilters)
+  }
+
   const clearAllFilters = () => {
-    setTypeFilter('all')
+    setTypeFilters(new Set())
+    setRarityFilters(new Set())
     setColorFilters(new Set())
+    setLegalityFormatFilter('all')
+    setManaValueFilter('all')
     setCollectionFilter('')
   }
 
@@ -464,21 +552,49 @@ export default function CollectionPage() {
       return false
     }
 
-    // Type filter
-    if (typeFilter !== 'all') {
+    // Card type filter
+    if (typeFilters.size > 0) {
       const typeLine = card.type_line?.toLowerCase() || ''
-      if (typeFilter === 'creature' && !typeLine.includes('creature')) return false
-      if (typeFilter === 'instant' && !typeLine.includes('instant')) return false
-      if (typeFilter === 'sorcery' && !typeLine.includes('sorcery')) return false
-      if (typeFilter === 'artifact' && !typeLine.includes('artifact')) return false
-      if (typeFilter === 'enchantment' && !typeLine.includes('enchantment')) return false
-      if (typeFilter === 'planeswalker' && !typeLine.includes('planeswalker')) return false
-      if (typeFilter === 'land' && !typeLine.includes('land')) return false
+      const hasSelectedType = Array.from(typeFilters).some((type) => typeLine.includes(type))
+      if (!hasSelectedType) {
+        return false
+      }
+    }
+
+    // Rarity filter
+    if (rarityFilters.size > 0) {
+      const rarity = card.rarity?.toLowerCase() || 'unknown'
+      if (!rarityFilters.has(rarity)) {
+        return false
+      }
+    }
+
+    // Mana value filter
+    if (manaValueFilter !== 'all') {
+      if (typeof card.cmc !== 'number') {
+        return false
+      }
+
+      if (manaValueFilter === '10+') {
+        if (card.cmc < 10) {
+          return false
+        }
+      } else if (card.cmc !== Number(manaValueFilter)) {
+        return false
+      }
+    }
+
+    // Legality filter
+    if (legalityFormatFilter !== 'all') {
+      const legalities = cardLegalities[card.scryfall_id]
+      if (!legalities || legalities[legalityFormatFilter] !== 'legal') {
+        return false
+      }
     }
 
     // Color filter - multi-color cards only show if ALL their colors are selected
     if (colorFilters.size > 0) {
-      const cardColors = card.colors ? card.colors.split(',') : []
+      const cardColors = card.colors ? card.colors.split(',').map((color) => color.trim()) : []
       
       // If card has no colors (colorless), only show if no colors are selected
       // or if user hasn't selected any colors
@@ -497,13 +613,37 @@ export default function CollectionPage() {
     return true
   })
 
+  // Sort the filtered collection
+  const sortedAndFilteredCollection = [...filteredCollection].sort((a, b) => {
+    switch (sortOption) {
+      case 'name':
+        return a.name.localeCompare(b.name)
+      case 'count':
+        return b.quantity - a.quantity
+      case 'price':
+        const getPriceValue = (priceStr?: string) => {
+          if (!priceStr) return 0
+          const num = parseFloat(priceStr.replace('$', '').trim())
+          return isNaN(num) ? 0 : num
+        }
+        return getPriceValue(b.price) - getPriceValue(a.price)
+      case 'rarity':
+        const rarityOrder = { mythic: 5, rare: 4, uncommon: 3, common: 2, special: 1, unknown: 0 }
+        const rarityA = rarityOrder[b.rarity?.toLowerCase() as keyof typeof rarityOrder] || 0
+        const rarityB = rarityOrder[a.rarity?.toLowerCase() as keyof typeof rarityOrder] || 0
+        return rarityA - rarityB
+      default:
+        return 0
+    }
+  })
+
   const totalCards = collection.reduce((sum, card) => sum + card.quantity, 0)
   
   // Pagination calculations
-  const totalPages = Math.ceil(filteredCollection.length / itemsPerPage)
+  const totalPages = Math.ceil(sortedAndFilteredCollection.length / itemsPerPage)
   const startIndex = (currentPage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
-  const paginatedCollection = filteredCollection.slice(startIndex, endIndex)
+  const paginatedCollection = sortedAndFilteredCollection.slice(startIndex, endIndex)
   
   const goToPage = (page: number) => {
     setCurrentPage(Math.max(1, Math.min(page, totalPages)))
@@ -514,6 +654,22 @@ export default function CollectionPage() {
     '#f97316', '#3b82f6', '#ef4444', '#10b981', '#f59e0b', 
     '#ec4899', '#14b8a6', '#7c3aed', '#06b6d4', '#84cc16'
   ]
+  const cardTypes = [
+    { label: 'Creature', value: 'creature' },
+    { label: 'Instant', value: 'instant' },
+    { label: 'Sorcery', value: 'sorcery' },
+    { label: 'Artifact', value: 'artifact' },
+    { label: 'Enchantment', value: 'enchantment' },
+    { label: 'Planeswalker', value: 'planeswalker' },
+    { label: 'Land', value: 'land' }
+  ]
+  const rarities = [
+    { label: 'Common', value: 'common' },
+    { label: 'Uncommon', value: 'uncommon' },
+    { label: 'Rare', value: 'rare' },
+    { label: 'Mythic', value: 'mythic' },
+    { label: 'Special', value: 'special' }
+  ]
 
   return (
     <div className="collection-page">
@@ -521,7 +677,7 @@ export default function CollectionPage() {
         <div>
           <h1 className="page-title">My Collection</h1>
           <p className="page-subtitle">
-            {totalCards.toLocaleString()} total cards across {filteredCollection.length} unique
+            {totalCards.toLocaleString()} total cards across {sortedAndFilteredCollection.length} unique
           </p>
         </div>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
@@ -570,21 +726,49 @@ export default function CollectionPage() {
       {/* Filters Section */}
       <div className="collection-filters">
         <div className="filter-group">
-          <label className="filter-label">Type:</label>
+          <label className="filter-label">Sort:</label>
           <select 
-            value={typeFilter} 
-            onChange={(e) => setTypeFilter(e.target.value)}
+            value={sortOption} 
+            onChange={(e) => setSortOption(e.target.value)}
             className="filter-select"
           >
-            <option value="all">All Types</option>
-            <option value="creature">Creatures</option>
-            <option value="instant">Instants</option>
-            <option value="sorcery">Sorceries</option>
-            <option value="artifact">Artifacts</option>
-            <option value="enchantment">Enchantments</option>
-            <option value="planeswalker">Planeswalkers</option>
-            <option value="land">Lands</option>
+            <option value="name">Sort by Name</option>
+            <option value="count">Sort by Count</option>
+            <option value="price">Sort by Price</option>
+            <option value="rarity">Sort by Rarity</option>
           </select>
+        </div>
+
+        <div className="filter-group filter-group-multi">
+          <label className="filter-label">Type:</label>
+          <div className="collection-filter-chips">
+            {cardTypes.map((type) => (
+              <button
+                key={type.value}
+                type="button"
+                onClick={() => toggleTypeFilter(type.value)}
+                className={`filter-chip ${typeFilters.has(type.value) ? 'active' : ''}`}
+              >
+                {type.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="filter-group filter-group-multi">
+          <label className="filter-label">Rarity:</label>
+          <div className="collection-filter-chips">
+            {rarities.map((rarity) => (
+              <button
+                key={rarity.value}
+                type="button"
+                onClick={() => toggleRarityFilter(rarity.value)}
+                className={`filter-chip ${rarityFilters.has(rarity.value) ? 'active' : ''}`}
+              >
+                {rarity.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="filter-group filter-group-colors">
@@ -643,7 +827,52 @@ export default function CollectionPage() {
           </div>
         </div>
 
-        {(typeFilter !== 'all' || colorFilters.size > 0 || collectionFilter !== '') && (
+        <div className="filter-group">
+          <label className="filter-label">Legality:</label>
+          <select
+            value={legalityFormatFilter}
+            onChange={(e) => setLegalityFormatFilter(e.target.value)}
+            className="filter-select"
+          >
+            <option value="all">All Formats</option>
+            <option value="standard">Standard</option>
+            <option value="pioneer">Pioneer</option>
+            <option value="modern">Modern</option>
+            <option value="legacy">Legacy</option>
+            <option value="vintage">Vintage</option>
+            <option value="pauper">Pauper</option>
+            <option value="commander">Commander</option>
+            <option value="brawl">Brawl</option>
+            <option value="historic">Historic</option>
+            <option value="timeless">Timeless</option>
+            <option value="alchemy">Alchemy</option>
+            <option value="explorer">Explorer</option>
+          </select>
+        </div>
+
+        <div className="filter-group">
+          <label className="filter-label">Mana Value:</label>
+          <select
+            value={manaValueFilter}
+            onChange={(e) => setManaValueFilter(e.target.value)}
+            className="filter-select"
+          >
+            <option value="all">All</option>
+            <option value="0">0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10+">10+</option>
+          </select>
+        </div>
+
+        {(typeFilters.size > 0 || rarityFilters.size > 0 || colorFilters.size > 0 || legalityFormatFilter !== 'all' || manaValueFilter !== 'all' || collectionFilter !== '') && (
           <button onClick={clearAllFilters} className="btn btn-sm btn-secondary clear-filters-btn">
             Clear Filters
           </button>
@@ -820,7 +1049,7 @@ export default function CollectionPage() {
                 </div>
               ))}
             </div>
-          ) : filteredCollection.length === 0 ? (
+          ) : sortedAndFilteredCollection.length === 0 ? (
             <div className="empty-state-large">
               <div className="empty-state-icon">
                 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -850,7 +1079,7 @@ export default function CollectionPage() {
             <>
               {/* Pagination Info */}
               <div style={{ marginBottom: '1rem', color: 'rgba(255, 255, 255, 0.7)', fontSize: '0.875rem' }}>
-                Showing {startIndex + 1}-{Math.min(endIndex, filteredCollection.length)} of {filteredCollection.length} unique cards
+                Showing {startIndex + 1}-{Math.min(endIndex, sortedAndFilteredCollection.length)} of {sortedAndFilteredCollection.length} unique cards
                 {totalPages > 1 && ` • Page ${currentPage} of ${totalPages}`}
               </div>
               

@@ -303,8 +303,8 @@ export default function SearchPage() {
       return card.image_uris[size]
     }
     // If card has card_faces, it's a double-sided card
-    if (card.card_faces && card.card_faces[faceIndex]?.image_uris) {
-      return card.card_faces[faceIndex].image_uris[size]
+    if (card.card_faces && card.card_faces[faceIndex]) {
+      return card.card_faces[faceIndex]?.image_uris?.[size]
     }
     return undefined
   }
